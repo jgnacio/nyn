@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import * as THREE from "three";
+import { CSS3DRenderer, CSS3DObject } from "three/examples/jsm/renderers/CSS3DRenderer.js";
 import {
   EffectComposer,
   RenderPass,
@@ -14,6 +16,7 @@ import {
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import Lenis from "lenis";
+import ClosingInvitation from "./ClosingInvitation";
 
 gsap.registerPlugin(ScrollTrigger);
 
@@ -57,6 +60,72 @@ const DIR_SIGN = 1;
 
 const PLANE_HEIGHT = 13; // fixed plane height in world units, same for every image; width is derived per-image from its natural aspect ratio (no cropping)
 
+// Film-strip sprocket holes: world-unit spacing between hole centers along
+// an image's width, so the pitch reads consistently across images of
+// different aspect ratios instead of a fixed hole-count-per-image looking
+// denser on wide images and sparser on narrow ones.
+const FILM_HOLE_SPACING = 2.6;
+
+// Sprocket band height, in world units, as EXTRA geometry stacked above and
+// below each photo's own PLANE_HEIGHT — not carved out of it. This is the
+// "option B" shape: the band is a real strip of its own curved geometry
+// (matching the photo's curvature via the same yOffset-aware
+// `computeCurvedPlanePositions`), so no photo pixels are ever covered or
+// cropped by it.
+const FILM_BAND_HEIGHT = 0.8;
+
+// The closing invitation is authored, not photographed, so it has no natural
+// image dimensions to derive a width from — these aspect ratios are picked by
+// hand instead. It becomes the LAST slide in the same spiral sequence (see
+// `CLOSING_INDEX` below), sized/positioned through the exact same
+// helix/curvature math as every photo.
+//
+// Two ratios by orientation: on a wide (landscape) viewport the card is a
+// landscape rectangle; on a narrow (portrait) phone that same landscape card,
+// once expanded to cover the screen, becomes a short letterbox band with the
+// text crammed into it — unreadable. So portrait viewports get a PORTRAIT card
+// (taller than wide, ~2:3 like a real invitation) that fills a phone screen
+// naturally. Chosen once at init from the load-time orientation (see
+// `closingAspect` below).
+const CLOSING_CARD_ASPECT_LANDSCAPE = 1.5;
+const CLOSING_CARD_ASPECT_PORTRAIT = 0.66;
+
+// CSS-pixel-per-world-unit scale used to size the closing card's real DOM
+// element before CSS3DObject scales it back down into world units (see
+// `CSS3DObject.scale.set` below) — arbitrary, only affects the DOM element's
+// internal pixel density/crispness, not its final on-screen size.
+const CSS3D_PX_PER_UNIT = 180;
+
+// The closing card is a real DOM element positioned in 3D space via
+// CSS3DRenderer, which has no fog/occlusion against the WebGL photos — a
+// nearer photo can't visually hide it the way it would a WebGL mesh. So it's
+// kept hidden until scroll is within this many "slide steps" of taking the
+// stage (i.e. nothing else should be centered in front of it by then anyway),
+// then revealed with a quick fade as it settles into place.
+const CLOSING_REVEAL_STEPS = 1.1;
+
+// The closing card's swing-in (via the normal helix/angleFor math, same as
+// every photo) completes EXPAND_STEPS early — at
+// (CLOSING_INDEX - EXPAND_STEPS) instead of riding all the way to
+// CLOSING_INDEX. The remaining EXPAND_STEPS of scroll, with the card already
+// parked dead-center, are spent scaling it up from its normal
+// near-fullscreen "photo" framing to a true edge-to-edge fullscreen fill —
+// same scroll-driven/reversible pattern as the intro hero pull-back, just
+// mirrored at the tail end instead of the head.
+const CLOSING_EXPAND_STEPS = 0.35;
+
+// Extra scroll distance, in viewport-heights, held AFTER the closing card
+// finishes expanding to fullscreen and BEFORE SaveTheDate is allowed to take
+// over. Previously there was none — the ScrollTrigger's `end` and the
+// container's height were the same point, so the sticky canvas released the
+// instant expandEased hit 1, no pause. This decouples them: the container
+// grows by this much extra height (keeping the sticky layers pinned, since
+// they only release at the container's own bottom edge), while the
+// ScrollTrigger `end` stays at the original (un-extended) distance so
+// `progressState` simply holds at maxProgress — card frozen fullscreen,
+// already white — for this stretch of scroll before the section releases.
+const CLOSING_DWELL_VH = 180;
+
 // Calibration constant only: the old fixed 72deg-per-image step (5 images
 // per revolution) is no longer used for angular *spacing* (spacing is now
 // non-uniform, driven by each image's own angular footprint — see
@@ -74,7 +143,7 @@ const DEPTH_PITCH = DEPTH_PER_STEP / ANGLE_STEP_REF; // depth-recession world un
 // so the rel=0 ("current") image, which always sits at x=0,z=0, still reads
 // as near-fullscreen — its screen size depends only on PLANE_HEIGHT and this
 // distance/FOV, not on RADIUS (rel=0 => z=0 regardless of radius).
-const CAMERA_POSITION = { x: 0, y: 0.8, z: 13 };
+const CAMERA_POSITION = { x: 0, y: 0.8, z: 19 };
 const CAMERA_LOOK_AT = { x: 0, y: 0, z: 0 };
 const CAMERA_FOV = 60;
 
@@ -92,7 +161,26 @@ const CAMERA_FOV = 60;
 // hardcoded constant, so it adapts to the hero's real aspect ratio and the
 // current viewport — a fixed value was too close and cropped the image.
 const CAMERA_PULLBACK_STEPS = 1; // image-steps of scroll over which z goes heroFitZ -> CAMERA_POSITION.z (1 = completes as you scroll past the first image)
-const HERO_FIT_ZOOM_OUT = 1.15; // >1 pushes the progress-0 camera slightly farther than an exact width-fill, so the hero sits a touch back with a little breathing margin (1 = exact edge-to-edge fill)
+const HERO_FIT_ZOOM_OUT = 1; // >1 pushes the progress-0 camera slightly farther than an exact width-fill, so the hero sits a touch back with a little breathing margin (1 = exact edge-to-edge fill, no side margins)
+
+// CAMERA_POSITION.z (19) was tuned by eye on a landscape desktop viewport. FOV
+// is vertical, so visible WIDTH at a fixed z shrinks with the aspect ratio
+// (visibleWidth = 2*z*tan(fov/2)*aspect) — on a narrow portrait phone the
+// same z lets the (wider-than-tall) current photo overflow the sides of the
+// screen, reading as zoomed-in/too close. This backs the camera off just far
+// enough to width-fit a representative photo (reusing `computeHeroFitZ`'s
+// exact-fit math), never closer than the desktop-tuned distance
+// (`Math.max`), so wide/desktop viewports are completely unaffected.
+function computeRestingCameraZ(
+  heroWidth: number,
+  viewportAspect: number,
+  fovDeg: number
+): number {
+  return Math.max(
+    CAMERA_POSITION.z,
+    computeHeroFitZ(heroWidth, viewportAspect, fovDeg)
+  );
+}
 
 // --- Scroll-driven curvature ramp ---
 // Curvature is a GLOBAL, scroll-driven lerp (same factor for every mesh) from a
@@ -173,6 +261,21 @@ function computeHeroFitZ(
   return (heroWidth / (2 * tanHalfFov * viewportAspect)) * HERO_FIT_ZOOM_OUT;
 }
 
+// Inverse of `computeHeroFitZ`'s formula: the world-space WIDTH visible at a
+// given camera distance. Used for the closing card's tail-end expand — the
+// camera itself never moves there (it's already resting at
+// CAMERA_POSITION.z), so instead the card's own CSS3DObject scale is grown
+// until its rendered width equals this visible width, filling the viewport
+// edge-to-edge at the camera's current, unmoving distance.
+function computeVisibleWidthAtZ(
+  z: number,
+  viewportAspect: number,
+  fovDeg: number
+): number {
+  const tanHalfFov = Math.tan((fovDeg * Math.PI) / 180 / 2);
+  return 2 * z * tanHalfFov * viewportAspect;
+}
+
 // Builds a plane that is bent along the same circle `helixPoint` places
 // image centers on, instead of a flat rectangle. Vertices are generated in
 // the mesh's local space using a *local* angular offset `a` from the image's
@@ -211,7 +314,12 @@ function computeCurvedPlanePositions(
   radius: number,
   centerAngle: number,
   segments: number,
-  curveFactor: number
+  curveFactor: number,
+  // Fixed world-Y offset applied AFTER the curve/shear lerp, unaffected by
+  // curveFactor — used to stack the film-strip sprocket bands directly
+  // above/below a photo's own PLANE_HEIGHT as real extra geometry (see
+  // FILM_BAND_HEIGHT) instead of carving the bands out of the photo itself.
+  yOffset = 0
 ): void {
   const angularSpan = width / radius;
   const centerDepth = Math.abs(centerAngle) * DEPTH_PITCH;
@@ -255,8 +363,10 @@ function computeCurvedPlanePositions(
 
     // y is unaffected by Y-axis rotation. Flat target has no shear
     // (-/+height/2); curved target subtracts the a*PITCH shear. Lerp both.
-    const yBottom = THREE.MathUtils.lerp(-height / 2, -height / 2 - a * PITCH, curveFactor);
-    const yTop = THREE.MathUtils.lerp(height / 2, height / 2 - a * PITCH, curveFactor);
+    const yBottom =
+      THREE.MathUtils.lerp(-height / 2, -height / 2 - a * PITCH, curveFactor) + yOffset;
+    const yTop =
+      THREE.MathUtils.lerp(height / 2, height / 2 - a * PITCH, curveFactor) + yOffset;
     const base = i * 6;
     out[base] = x;
     out[base + 1] = yBottom;
@@ -273,14 +383,24 @@ function createCurvedPlaneGeometry(
   radius: number,
   centerAngle: number,
   segments = 24,
-  curveFactor = 1
+  curveFactor = 1,
+  yOffset = 0
 ): THREE.BufferGeometry {
   const geometry = new THREE.BufferGeometry();
   const uvs: number[] = [];
   const indices: number[] = [];
 
   const positions = new Float32Array((segments + 1) * 2 * 3);
-  computeCurvedPlanePositions(positions, width, height, radius, centerAngle, segments, curveFactor);
+  computeCurvedPlanePositions(
+    positions,
+    width,
+    height,
+    radius,
+    centerAngle,
+    segments,
+    curveFactor,
+    yOffset
+  );
 
   for (let i = 0; i <= segments; i++) {
     const u = i / segments;
@@ -302,58 +422,25 @@ function createCurvedPlaneGeometry(
   return geometry;
 }
 
-// --- Hero "photo developing" shader reveal (mesh index 0 only) ---
-// A subtle, filmic grade that eases OUT as `uProgress` goes 0 -> 1, in sync
-// with the existing camera pull-back / curvature ramp: at progress 0 the
-// hero looks like a print pulled early from the developer (slightly
-// overexposed, higher contrast, faint chromatic fringing, a touch
-// desaturated); by progress 1 it has settled into normal, neutral color.
-// Geometry/position logic is completely untouched — this only changes the
-// fragment-shading treatment for mesh 0.
-const HERO_VERTEX_SHADER = `
-varying vec2 vUv;
-void main() {
-  vUv = uv;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-}
-`;
-
-const HERO_FRAGMENT_SHADER = `
-uniform sampler2D uMap;
-uniform float uProgress;
-uniform float uOpacity;
-varying vec2 vUv;
-
-void main() {
-  // Subtle chromatic aberration that fades out as uProgress -> 1.
-  float aberration = 0.004 * (1.0 - uProgress);
-  vec2 dir = vUv - 0.5;
-  float r = texture2D(uMap, vUv + dir * aberration).r;
-  float g = texture2D(uMap, vUv).g;
-  float b = texture2D(uMap, vUv - dir * aberration).b;
-  float a = texture2D(uMap, vUv).a;
-  vec3 color = vec3(r, g, b);
-
-  // Exposure/contrast: slightly hot and punchy early, neutral by progress 1.
-  color = (color - 0.5) * mix(1.25, 1.0, uProgress) + 0.5 + mix(0.12, 0.0, uProgress);
-  color = clamp(color, 0.0, 1.0);
-
-  // Desaturation that eases to full color.
-  float lum = dot(color, vec3(0.299, 0.587, 0.114));
-  color = mix(color, vec3(lum), mix(0.35, 0.0, uProgress));
-
-  gl_FragColor = vec4(color, uOpacity * a);
-}
-`;
-
 export default function SpiralGallery() {
   const mountRef = useRef<HTMLDivElement>(null);
+  const cssMountRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  // The closing card's DOM node is created imperatively (it's wrapped by a
+  // CSS3DObject, not mounted by React directly) — this state only exists so
+  // its render below can portal the real <ClosingInvitation/> JSX into it
+  // once the effect has created it.
+  const [closingCardEl, setClosingCardEl] = useState<HTMLDivElement | null>(null);
+  // Whether the closing card was built in its portrait (mobile) proportion —
+  // drives the vertical layout variant of <ClosingInvitation/> below. Set
+  // once during scene init from the load-time viewport orientation.
+  const [closingPortrait, setClosingPortrait] = useState(false);
 
   useEffect(() => {
     const mount = mountRef.current;
+    const cssMount = cssMountRef.current;
     const container = containerRef.current;
-    if (!mount || !container) return;
+    if (!mount || !cssMount || !container) return;
 
     // Prevent the browser from restoring a stale scroll position on
     // reload/back-forward navigation — Lenis would then ease from 0 toward
@@ -373,10 +460,12 @@ export default function SpiralGallery() {
     let cancelled = false;
 
     let renderer: THREE.WebGLRenderer | null = null;
+    let cssRenderer: CSS3DRenderer | null = null;
     let composer: EffectComposer | null = null;
     let animationId = 0;
     let lenis: Lenis | null = null;
     let scrollTween: gsap.core.Tween | null = null;
+    let dwellTween: gsap.core.Tween | null = null;
     let tickerCallback: ((time: number) => void) | null = null;
     let onResize: (() => void) | null = null;
     const geometries: THREE.BufferGeometry[] = [];
@@ -392,7 +481,28 @@ export default function SpiralGallery() {
 
       const aspects = dims.map((d) => d.width / d.height);
       const widths = aspects.map((aspect) => PLANE_HEIGHT * aspect);
-      const angularSpans = widths.map((w) => w / RADIUS);
+
+      // The closing invitation rides as one more slide at the end of the
+      // exact same ribbon — same angular-layout math, same helix, same
+      // curvature — instead of being a separate HTML element bolted on
+      // after the fact. `slideWidths`/`slideCount` extend the photo-only
+      // arrays by exactly one entry for it.
+      const CLOSING_INDEX = IMAGE_FILES.length;
+      // Orientation picked once, from the load-time viewport: a taller-than-
+      // wide viewport is a portrait phone, so the card gets the portrait
+      // aspect. Fixed for the session (a mid-experience device rotation keeps
+      // this aspect rather than rebuilding the whole ribbon layout) — the
+      // expand-to-cover below still fully fills whichever way the phone ends
+      // up, so a rotation degrades gracefully instead of breaking.
+      const closingPortrait = window.innerHeight > window.innerWidth;
+      setClosingPortrait(closingPortrait);
+      const closingAspect = closingPortrait
+        ? CLOSING_CARD_ASPECT_PORTRAIT
+        : CLOSING_CARD_ASPECT_LANDSCAPE;
+      const closingWidth = PLANE_HEIGHT * closingAspect;
+      const slideWidths = [...widths, closingWidth];
+      const slideCount = slideWidths.length;
+      const slideAngularSpans = slideWidths.map((w) => w / RADIUS);
 
       // Camera Z at progress 0, sized so the flat hero fits the current
       // viewport (see `computeHeroFitZ`). Mutable: recomputed on resize since
@@ -403,13 +513,41 @@ export default function SpiralGallery() {
         CAMERA_FOV
       );
 
-      // Cumulative, edge-to-edge angular layout: each image's center angle
+      // Resting camera distance, aspect-adjusted (see `computeRestingCameraZ`).
+      // Mutable: recomputed on resize since it depends on viewport aspect ratio.
+      let restingCameraZ = computeRestingCameraZ(
+        widths[0],
+        window.innerWidth / window.innerHeight,
+        CAMERA_FOV
+      );
+
+      // How much bigger than its normal footprint the closing card must scale
+      // to fully COVER the viewport at the camera's resting distance
+      // (restingCameraZ, which never moves during the expand — only the card's
+      // own scale changes). "Cover", not "fit-width": scale by whichever of
+      // width/height needs the larger factor, so the card never leaves a gap
+      // on either axis regardless of how the card aspect (portrait on mobile,
+      // landscape on desktop) relates to the viewport aspect. Mutable:
+      // recomputed on resize since it depends on viewport aspect ratio.
+      const computeClosingExpandScale = () => {
+        const aspect = window.innerWidth / window.innerHeight;
+        const visibleWidth = computeVisibleWidthAtZ(
+          restingCameraZ,
+          aspect,
+          CAMERA_FOV
+        );
+        const visibleHeight = visibleWidth / aspect;
+        return Math.max(visibleWidth / closingWidth, visibleHeight / PLANE_HEIGHT);
+      };
+      let closingExpandScale = computeClosingExpandScale();
+
+      // Cumulative, edge-to-edge angular layout: each slide's center angle
       // theta_i = (sum of angularSpan_k for k < i) + angularSpan_i / 2.
       const theta: number[] = [];
       let cumulative = 0;
-      for (let i = 0; i < angularSpans.length; i++) {
-        theta.push(cumulative + angularSpans[i] / 2);
-        cumulative += angularSpans[i];
+      for (let i = 0; i < slideAngularSpans.length; i++) {
+        theta.push(cumulative + slideAngularSpans[i] / 2);
+        cumulative += slideAngularSpans[i];
       }
 
       // Piecewise-linear interpolation of the stage's angle across the
@@ -427,17 +565,29 @@ export default function SpiralGallery() {
       }
 
       const scene = new THREE.Scene();
-      // Warm cream background (matches the page palette) — fills the margins
-      // around the width-fit hero and the gaps between spiral panels.
-      scene.background = new THREE.Color(0xe8e1d1);
+      // "Lino envejecido" (--background-alt) — fills the margins around the
+      // width-fit hero and the gaps between spiral panels.
+      scene.background = new THREE.Color(0xe4dfd4);
       // Atmospheric depth cue: distant spiral turns dissolve into the exact
       // cream of the background. The hero sits at the origin and the camera
-      // stays at distance <= CAMERA_POSITION.z (13) at all scroll positions, so
-      // fog.near (20) is comfortably beyond it — the front image is never
-      // fogged — while fog.far (52) fully fades the far turns. Fog color MUST
-      // match the background so the fade is seamless. MeshBasicMaterial
-      // respects fog by default.
-      scene.fog = new THREE.Fog(0xe8e1d1, 20, 52);
+      // stays at distance <= restingCameraZ (19 on desktop, up to ~40 on
+      // narrow/portrait phones — see `computeRestingCameraZ`) at all scroll
+      // positions, so fog.near (45) is comfortably beyond it — the front image is never
+      // fogged — while fog.far (115) fully fades the far turns, pushed out a
+      // bit further than a pure near-scale so distant turns stay visible
+      // longer as you scroll/turn through the spiral. Fog color MUST match
+      // the background so the fade is seamless. MeshBasicMaterial respects
+      // fog by default.
+      scene.fog = new THREE.Fog(0xe4dfd4, 45, 115);
+
+      // Reusable endpoints for the background/fog color crossfade driven by
+      // the closing card's expand phase below — "Lino envejecido" (the
+      // spiral's resting color) to "Cloud Dancer" (the closing card's own
+      // CREAM background, and the color the very top of the next HTML
+      // section is primed to match). Mutated in place every frame via
+      // lerpColors, never reallocated.
+      const sceneBgCream = new THREE.Color(0xe4dfd4);
+      const sceneBgWhite = new THREE.Color(0xf1f0ec);
 
       const camera = new THREE.PerspectiveCamera(
         CAMERA_FOV,
@@ -457,49 +607,40 @@ export default function SpiralGallery() {
       const textureLoader = new THREE.TextureLoader();
       const meshes: THREE.Mesh[] = [];
 
-      // Each image starts at opacity 0 and is revealed the moment its own
-      // texture finishes loading — no fade/reveal timeline. The camera
-      // pull-back that frames the hero is driven purely by scroll (see the
-      // camera block in `updateSpiral`).
-      IMAGE_FILES.forEach((file, i) => {
+      // 1x1 placeholder so every material's `map` is non-null from its very
+      // FIRST shader compile (opacity is 0 anyway, so it's invisible). This
+      // keeps USE_MAP defined from frame one, needed for the `vMapUv`
+      // varying the film-strip onBeforeCompile block below reads — without
+      // it, that block runs before any real texture has loaded, USE_MAP is
+      // undefined on that first compile, and the varying doesn't exist yet
+      // (WebGLProgram VALIDATE_STATUS false).
+      const placeholderTexture = new THREE.DataTexture(
+        new Uint8Array([255, 255, 255, 255]),
+        1,
+        1
+      );
+      placeholderTexture.needsUpdate = true;
+
+      // Each photo starts at opacity 0 and is revealed the moment its own
+      // texture is ready — no fade/reveal timeline. The camera pull-back
+      // that frames the hero is driven purely by scroll (see the camera
+      // block in `updateSpiral`). Only the photos get a WebGL mesh here —
+      // the closing card (index CLOSING_INDEX) is set up separately below as
+      // a CSS3DObject, since it's real DOM content, not a texture.
+      for (let i = 0; i < IMAGE_FILES.length; i++) {
         // Final geometry built once, from real dimensions — no
         // placeholder-then-rebuild-on-texture-load, since dimensions are
         // already known from the preload above.
-        const geometry = createCurvedPlaneGeometry(widths[i], PLANE_HEIGHT, RADIUS, theta[i]);
+        const geometry = createCurvedPlaneGeometry(slideWidths[i], PLANE_HEIGHT, RADIUS, theta[i]);
         geometries.push(geometry);
 
-        // Mesh 0 (the hero) gets a custom "photo developing" reveal shader;
-        // every other mesh keeps the plain MeshBasicMaterial pipeline as-is.
-        const material: THREE.MeshBasicMaterial | THREE.ShaderMaterial =
-          i === 0
-            ? new THREE.ShaderMaterial({
-                uniforms: {
-                  uMap: { value: null as THREE.Texture | null },
-                  uProgress: { value: 0 },
-                  uOpacity: { value: 0 },
-                },
-                vertexShader: HERO_VERTEX_SHADER,
-                fragmentShader: HERO_FRAGMENT_SHADER,
-                transparent: true,
-                side: THREE.DoubleSide,
-                // NOT `fog: true`: that flag only auto-wires fogColor/fogNear/
-                // fogFar uniforms into three's BUILT-IN materials (their
-                // shaders are generated with the fog chunk already included).
-                // A custom ShaderMaterial with `fog: true` makes the renderer
-                // try to write those uniforms anyway, but our shader never
-                // declared them -> "can't access property 'value' of
-                // undefined" on `uniforms.fogColor`. The hero always sits at
-                // the stage/origin, well inside fog.near (20), so it would
-                // never visually fog anyway — safe to leave fog off here.
-                fog: false,
-                depthWrite: true,
-              })
-            : new THREE.MeshBasicMaterial({
-                color: 0xffffff,
-                side: THREE.DoubleSide,
-                transparent: true,
-                opacity: 0,
-              });
+        const material = new THREE.MeshBasicMaterial({
+          color: 0xffffff,
+          side: THREE.DoubleSide,
+          transparent: true,
+          opacity: 0,
+          map: placeholderTexture,
+        });
         materials.push(material);
 
         const mesh = new THREE.Mesh(geometry, material);
@@ -513,26 +654,123 @@ export default function SpiralGallery() {
         meshes.push(mesh);
         group.add(mesh);
 
+        // Film-strip sprocket bands: each band is its OWN curved geometry,
+        // stacked as extra height above/below PLANE_HEIGHT (see
+        // FILM_BAND_HEIGHT) and parented to the photo mesh so it inherits
+        // position/rotation automatically — the photo's own pixels are
+        // never covered or cropped.
+        const holeCount = Math.max(4, Math.round(slideWidths[i] / FILM_HOLE_SPACING));
+        const bandMaterial = new THREE.MeshBasicMaterial({
+          color: 0xffffff,
+          side: THREE.DoubleSide,
+          transparent: true,
+          opacity: 0,
+          map: placeholderTexture,
+        });
+        bandMaterial.onBeforeCompile = (shader) => {
+          shader.uniforms.uHoleCount = { value: holeCount };
+          shader.fragmentShader = shader.fragmentShader
+            .replace(
+              "#include <common>",
+              `#include <common>\nuniform float uHoleCount;`
+            )
+            .replace(
+              "#include <map_fragment>",
+              `#include <map_fragment>
+              {
+                float holeX = fract(vMapUv.x * uHoleCount);
+                bool isHole = holeX > 0.2 && holeX < 0.8
+                  && vMapUv.y > 0.22 && vMapUv.y < 0.78;
+                if (isHole) {
+                  discard;
+                } else {
+                  diffuseColor.rgb = vec3(0.05, 0.045, 0.04);
+                }
+              }`
+            );
+        };
+        materials.push(bandMaterial);
+
+        const bandOffset = PLANE_HEIGHT / 2 + FILM_BAND_HEIGHT / 2;
+        const topBandGeometry = createCurvedPlaneGeometry(
+          slideWidths[i],
+          FILM_BAND_HEIGHT,
+          RADIUS,
+          theta[i],
+          24,
+          1,
+          bandOffset
+        );
+        const bottomBandGeometry = createCurvedPlaneGeometry(
+          slideWidths[i],
+          FILM_BAND_HEIGHT,
+          RADIUS,
+          theta[i],
+          24,
+          1,
+          -bandOffset
+        );
+        geometries.push(topBandGeometry, bottomBandGeometry);
+
+        const topBandMesh = new THREE.Mesh(topBandGeometry, bandMaterial);
+        const bottomBandMesh = new THREE.Mesh(bottomBandGeometry, bandMaterial);
+        mesh.add(topBandMesh, bottomBandMesh);
+        mesh.userData.bandTopGeometry = topBandGeometry;
+        mesh.userData.bandBottomGeometry = bottomBandGeometry;
+        mesh.userData.bandMaterial = bandMaterial;
+
+        const file = IMAGE_FILES[i];
         // Texture load is independent of dimension preload/geometry build —
         // no cropping: textures map straight 0..1 onto the geometry.
         textureLoader.load(`/images/${file}`, (texture) => {
           texture.colorSpace = THREE.SRGBColorSpace;
           textures.push(texture);
 
-          if (material instanceof THREE.ShaderMaterial) {
-            material.uniforms.uMap.value = texture;
-            // Reveal this image as soon as its texture is ready — same
-            // timing as the MeshBasicMaterial path below, just via the
-            // uOpacity uniform since ShaderMaterial has no .opacity blend.
-            material.uniforms.uOpacity.value = 1;
-          } else {
-            material.map = texture;
-            material.needsUpdate = true;
-            // Reveal this image as soon as its texture is ready.
-            material.opacity = 1;
-          }
+          material.map = texture;
+          material.needsUpdate = true;
+          // Reveal this image as soon as its texture is ready.
+          material.opacity = 1;
+          const loadedBandMaterial = mesh.userData.bandMaterial as
+            | THREE.MeshBasicMaterial
+            | undefined;
+          if (loadedBandMaterial) loadedBandMaterial.opacity = 1;
         });
-      });
+      }
+
+      // --- The closing card: a REAL DOM element riding the same ribbon ---
+      // Instead of a WebGL texture standing in for it, the actual
+      // <ClosingInvitation/> markup (real, selectable text) is wrapped in a
+      // CSS3DObject and driven by the exact same helixPoint/angleFor math as
+      // every photo mesh above — same element throughout, from its swing
+      // into center stage to its final resting frame, no swap/crossfade to a
+      // separate section.
+      cssRenderer = new CSS3DRenderer();
+      cssRenderer.setSize(window.innerWidth, window.innerHeight);
+      cssRenderer.domElement.style.position = "absolute";
+      cssRenderer.domElement.style.top = "0";
+      cssRenderer.domElement.style.left = "0";
+      cssMount!.appendChild(cssRenderer.domElement);
+
+      const closingPxWidth = Math.round(closingWidth * CSS3D_PX_PER_UNIT);
+      const closingPxHeight = Math.round(PLANE_HEIGHT * CSS3D_PX_PER_UNIT);
+
+      const cardEl = document.createElement("div");
+      cardEl.style.width = `${closingPxWidth}px`;
+      cardEl.style.height = `${closingPxHeight}px`;
+      cardEl.style.opacity = "0";
+      cardEl.style.pointerEvents = "none";
+      cardEl.style.transition = "opacity 0.4s ease-out";
+      setClosingCardEl(cardEl);
+
+      const closingObject = new CSS3DObject(cardEl);
+      // Scales the element from CSS3D_PX_PER_UNIT-density pixels back down to
+      // world units, so it occupies exactly closingWidth x PLANE_HEIGHT —
+      // the same footprint a photo of that width would.
+      closingObject.scale.set(1 / CSS3D_PX_PER_UNIT, 1 / CSS3D_PX_PER_UNIT, 1);
+      const closingInitial = helixPoint(angleFor(CLOSING_INDEX, 0));
+      closingObject.position.set(closingInitial.x, closingInitial.y, closingInitial.z);
+      closingObject.rotation.y = closingInitial.rotationY;
+      group.add(closingObject);
 
       // Initial default. The real per-frame camera Z is scroll-driven inside
       // `updateSpiral`, and `updateSpiral(0)` runs below before the first
@@ -562,20 +800,38 @@ export default function SpiralGallery() {
       });
       dof.target = new THREE.Vector3(0, 0, 0);
 
+      // Base strengths held for the whole experience, then eased to 0 during
+      // the closing card's expand so the canvas→HTML handoff has no edge-darkened
+      // seam (see the lockstep lerp in updateSpiral's crossfade block).
+      const VIGNETTE_DARKNESS = 0.35; // subtle — the cream palette should still read warm
+      const NOISE_OPACITY = 0.06; // very subtle film grain to kill the "flat CGI" look
+
       const vignette = new VignetteEffect({
-        darkness: 0.35, // subtle — the cream palette should still read warm
+        darkness: VIGNETTE_DARKNESS,
         offset: 0.35,
       });
 
       const noise = new NoiseEffect({
         blendFunction: BlendFunction.OVERLAY,
       });
-      noise.blendMode.opacity.value = 0.06; // very subtle film grain to kill the "flat CGI" look
+      noise.blendMode.opacity.value = NOISE_OPACITY;
 
       // One EffectPass batches the screen-space effects efficiently.
       composer.addPass(new EffectPass(camera, dof, vignette, noise));
 
       const progressState = { value: 0 };
+
+      // Dwell-phase progress (0..1), driven by a SECOND ScrollTrigger over the
+      // stretch AFTER the closing card is fully expanded — the extra scroll the
+      // sticky canvas holds before it releases SaveTheDate underneath. Only used
+      // on LANDSCAPE (desktop): there the canvas fades its own background from
+      // Cloud Dancer back to Lino across this stretch, so the whole
+      // Cloud-Dancer→Lino gradient plays out INSIDE the always-visible WebGL
+      // canvas instead of in the HTML section below it (which the sticky canvas
+      // covers on wide viewports, hiding the gradient and reading as a hard
+      // seam). Portrait/mobile leaves this at 0 and keeps the gradient in the
+      // HTML, where it already reads perfectly.
+      const dwellState = { value: 0 };
 
       // Re-place every image relative to the current scroll progress. No
       // billboarding/lookAt: rotation.y comes straight from the helix angle,
@@ -612,7 +868,7 @@ export default function SpiralGallery() {
           ) as THREE.BufferAttribute;
           computeCurvedPlanePositions(
             positionAttr.array as Float32Array,
-            widths[i],
+            slideWidths[i],
             PLANE_HEIGHT,
             RADIUS,
             rotationY,
@@ -620,7 +876,159 @@ export default function SpiralGallery() {
             curveFactor
           );
           positionAttr.needsUpdate = true;
+
+          // Film-strip sprocket bands: same live-angle recompute as the
+          // photo above, just with FILM_BAND_HEIGHT and a fixed yOffset so
+          // each band stays glued directly above/below the photo's edge
+          // (not lerped by curveFactor — see computeCurvedPlanePositions).
+          const bandTopGeometry = mesh.userData.bandTopGeometry as
+            | THREE.BufferGeometry
+            | undefined;
+          const bandBottomGeometry = mesh.userData.bandBottomGeometry as
+            | THREE.BufferGeometry
+            | undefined;
+          if (bandTopGeometry && bandBottomGeometry) {
+            const bandOffset = PLANE_HEIGHT / 2 + FILM_BAND_HEIGHT / 2;
+
+            const topAttr = bandTopGeometry.getAttribute(
+              "position"
+            ) as THREE.BufferAttribute;
+            computeCurvedPlanePositions(
+              topAttr.array as Float32Array,
+              slideWidths[i],
+              FILM_BAND_HEIGHT,
+              RADIUS,
+              rotationY,
+              24,
+              curveFactor,
+              bandOffset
+            );
+            topAttr.needsUpdate = true;
+
+            const bottomAttr = bandBottomGeometry.getAttribute(
+              "position"
+            ) as THREE.BufferAttribute;
+            computeCurvedPlanePositions(
+              bottomAttr.array as Float32Array,
+              slideWidths[i],
+              FILM_BAND_HEIGHT,
+              RADIUS,
+              rotationY,
+              24,
+              curveFactor,
+              -bandOffset
+            );
+            bottomAttr.needsUpdate = true;
+          }
         }
+
+        // The closing card rides the same helix, computed from the SAME
+        // angleFor(index, p) as any photo — EXCEPT its swing-in is driven by
+        // p clamped to `closingArriveProgress` (CLOSING_INDEX - EXPAND_STEPS)
+        // instead of the raw scroll progress, so it finishes parked dead
+        // center a little EARLY. The remaining EXPAND_STEPS of scroll (p from
+        // closingArriveProgress to CLOSING_INDEX) are spent purely on the
+        // expand below — the angle/position stay frozen at their arrival
+        // values while only the scale grows. Revealed (opacity +
+        // pointer-events) only once close, since a CSS3D element has no
+        // fog/occlusion against the WebGL photos behind it.
+        const closingArriveProgress = CLOSING_INDEX - CLOSING_EXPAND_STEPS;
+        const closingAngle = angleFor(CLOSING_INDEX, Math.min(p, closingArriveProgress));
+        const closingPoint = helixPoint(closingAngle);
+
+        const revealT = THREE.MathUtils.clamp(
+          (p - (closingArriveProgress - CLOSING_REVEAL_STEPS)) / CLOSING_REVEAL_STEPS,
+          0,
+          1
+        );
+        cardEl.style.opacity = String(revealT);
+        cardEl.style.pointerEvents = revealT > 0.05 ? "auto" : "none";
+
+        // Expand phase: once the card has arrived dead-center, grow it from
+        // its normal PLANE_HEIGHT-sized footprint up to `closingExpandScale`
+        // — filling the viewport edge-to-edge — over the final
+        // CLOSING_EXPAND_STEPS of scroll. Ease-out to land softly at the
+        // fullscreen size right as scroll hits the bottom of the page.
+        const expandT = THREE.MathUtils.clamp(
+          (p - closingArriveProgress) / CLOSING_EXPAND_STEPS,
+          0,
+          1
+        );
+        const expandEased = 1 - Math.pow(1 - expandT, 3);
+        const closingScale =
+          THREE.MathUtils.lerp(1, closingExpandScale, expandEased) / CSS3D_PX_PER_UNIT;
+        closingObject.scale.set(closingScale, closingScale, 1 / CSS3D_PX_PER_UNIT);
+
+        // The card "arrives" near-center but not perfectly on-axis (position
+        // x/z close to but not exactly 0, rotation.y close to but not
+        // exactly 0 — see the comment above). That residual offset/tilt is
+        // barely visible at the card's normal PLANE_HEIGHT size, but the
+        // expand phase blows it up to fullscreen, turning it into an obvious
+        // keystoned/rotated slab. So position and rotation ALSO ease toward
+        // dead-center-and-flat (0,0,0 / rotation 0) in lockstep with the
+        // scale-up, landing perfectly screen-aligned — facing the static
+        // camera, which looks straight down -z at the origin — exactly when
+        // it finishes covering the viewport.
+        closingObject.position.set(
+          THREE.MathUtils.lerp(closingPoint.x, 0, expandEased),
+          THREE.MathUtils.lerp(closingPoint.y, 0, expandEased),
+          THREE.MathUtils.lerp(closingPoint.z, 0, expandEased)
+        );
+        closingObject.rotation.y = THREE.MathUtils.lerp(
+          closingPoint.rotationY,
+          0,
+          expandEased
+        );
+
+        // Crossfade the canvas background/fog from cream to white in lockstep
+        // with the same expand easing, so by the time the card finishes
+        // covering the viewport (expandEased=1, which lands exactly at the
+        // bottom of the scroll container) the WebGL canvas is already the
+        // same white as the card's own background and the HTML section right
+        // below it — no color seam, no hard cut, just a soft dissolve.
+        (scene.background as THREE.Color).lerpColors(
+          sceneBgCream,
+          sceneBgWhite,
+          expandEased
+        );
+        (scene.fog as THREE.Fog).color.lerpColors(
+          sceneBgCream,
+          sceneBgWhite,
+          expandEased
+        );
+
+        // LANDSCAPE ONLY — second crossfade: once the card is fullscreen and
+        // the background has reached Cloud Dancer above, ease it BACK toward
+        // Lino (--background-alt) across the dwell. This plays the
+        // Cloud-Dancer→Lino handoff gradient inside the always-visible canvas
+        // (the sticky canvas covers the HTML gradient on wide desktop
+        // viewports), so by the time the canvas releases, it already sits on
+        // Lino — the exact solid color SaveTheDate starts on in landscape (see
+        // .save-the-date-bg in globals.css) — and the join is seamless. Portrait
+        // keeps dwellState at 0, so this is a no-op and the HTML gradient stays.
+        if (!closingPortrait) {
+          (scene.background as THREE.Color).lerp(sceneBgCream, dwellState.value);
+          (scene.fog as THREE.Fog).color.lerp(sceneBgCream, dwellState.value);
+        }
+
+        // Fade the screen-space vignette (and film grain) out in lockstep with
+        // the same expand easing. The vignette darkens the canvas EDGES — and
+        // the bottom edge is exactly where this WebGL canvas hands off to the
+        // flat HTML section below (SaveTheDate). Left at full strength, the
+        // canvas ends on a vignette-DARKENED cream while the HTML starts on the
+        // plain cream they were both primed to, so the two never match and a
+        // hard color seam appears at the join (most visible on wide desktop
+        // viewports, where the bottom edge sits deep in the vignette falloff).
+        // Easing darkness → 0 as the closing card expands means that by the
+        // time of the handoff the canvas is a UNIFORM #f1f0ec with no edge
+        // darkening, matching the HTML exactly — no seam. The full-strength
+        // vignette is untouched for the entire experience before this expand.
+        vignette.darkness = THREE.MathUtils.lerp(VIGNETTE_DARKNESS, 0, expandEased);
+        noise.blendMode.opacity.value = THREE.MathUtils.lerp(
+          NOISE_OPACITY,
+          0,
+          expandEased
+        );
 
         // Scroll-driven camera pull-back. At p=0 the camera sits at heroFitZ
         // so the flat hero fills the viewport width; over the first
@@ -637,20 +1045,25 @@ export default function SpiralGallery() {
         const camT = THREE.MathUtils.clamp(p / CAMERA_PULLBACK_STEPS, 0, 1);
         const camEased = 1 - Math.pow(1 - camT, 3);
         camera.position.x = CAMERA_POSITION.x;
-        camera.position.y = THREE.MathUtils.lerp(0, CAMERA_POSITION.y, camEased);
+        // The spiral framing keeps the camera at CAMERA_POSITION.y (0.8), i.e.
+        // ABOVE the origin looking slightly DOWN — a nice tilt for the helix,
+        // but it keystones any vertical plane sitting at the origin. The
+        // closing card ends up exactly there (position eased to 0,0,0, facing
+        // +z), so with the tilt still on it renders as a slab "leaning
+        // forward" toward the viewer instead of dead-flat. So during the same
+        // expand window that flattens the card, ease the camera's y back to 0
+        // — by the time the card is fullscreen the camera looks straight down
+        // -z at the origin and the card is perfectly screen-aligned (no
+        // keystone), which is the framing the card's own flatten-to-(0,0,0)
+        // was always assuming.
+        const camYBase = THREE.MathUtils.lerp(0, CAMERA_POSITION.y, camEased);
+        camera.position.y = THREE.MathUtils.lerp(camYBase, 0, expandEased);
         camera.position.z = THREE.MathUtils.lerp(
           heroFitZ,
-          CAMERA_POSITION.z,
+          restingCameraZ,
           camEased
         );
         camera.lookAt(CAMERA_LOOK_AT.x, CAMERA_LOOK_AT.y, CAMERA_LOOK_AT.z);
-
-        // Hero shader reveal stays synchronized with the same eased
-        // pull-back progress used for the camera — no separate timing curve.
-        const heroMaterial = meshes[0]?.material;
-        if (heroMaterial instanceof THREE.ShaderMaterial) {
-          heroMaterial.uniforms.uProgress.value = camEased;
-        }
       }
 
       updateSpiral(0);
@@ -666,7 +1079,7 @@ export default function SpiralGallery() {
       gsap.ticker.add(tickerCallback);
       gsap.ticker.lagSmoothing(0);
 
-      const maxProgress = IMAGE_FILES.length - 1;
+      const maxProgress = slideCount - 1;
 
       scrollTween = gsap.to(progressState, {
         value: maxProgress,
@@ -674,7 +1087,77 @@ export default function SpiralGallery() {
         scrollTrigger: {
           trigger: container,
           start: "top top",
-          end: "bottom bottom",
+          // Deliberately NOT "bottom bottom": the container is now taller
+          // than this by CLOSING_DWELL_VH (see that constant) so the sticky
+          // canvas keeps holding its fully-expanded, already-white closing
+          // card for that extra stretch of scroll — progress simply can't
+          // exceed maxProgress once this trigger range is consumed — before
+          // SaveTheDate is released underneath.
+          //
+          // Measured as a FRACTION of the container's own real rendered
+          // height (getBoundingClientRect), not `window.innerHeight` — on
+          // mobile Chrome/Safari, `window.innerHeight` (current viewport,
+          // toolbar visible) and what `vh` units in CSS actually resolve to
+          // (GSAP/the browser measure against the toolbar-collapsed height)
+          // can differ, and that mismatch was making this end BEFORE the
+          // intended point instead of after, shortening the dwell instead of
+          // adding one. Proportions of a fixed vh split survive regardless
+          // of which "vh" the device is using, since both numerator and
+          // denominator are in the same vh units. `end` as a function so it
+          // recomputes on resize/refresh instead of baking in a stale value.
+          end: () => {
+            const totalVh = (IMAGE_FILES.length + 1) * 100 + CLOSING_DWELL_VH;
+            const coreVh = (IMAGE_FILES.length + 1) * 100;
+            return `+=${container!.getBoundingClientRect().height * (coreVh / totalVh)}`;
+          },
+          scrub: 1,
+          // `scrub: 1` deliberately smooths progressState.value behind the
+          // raw scroll position (nice damped feel for the photo-to-photo
+          // transitions) — but that smoothing has real inertia: a fast
+          // scroll/trackpad flick can carry the actual scroll position past
+          // `end` (into the dwell) before progressState.value finishes
+          // catching up to maxProgress, so the closing card gets caught
+          // mid-`expand` — position/rotation not yet eased to flat — right
+          // as SaveTheDate starts peeking in underneath (its release is
+          // driven by raw scroll, not by this lagging tween). Snapping the
+          // value the instant we cross `end` guarantees the card is already
+          // flat/fullscreen for the entire dwell, no matter how fast the
+          // user scrolled through it.
+          onLeave: () => {
+            progressState.value = maxProgress;
+          },
+        },
+      });
+
+      // Second trigger: drives dwellState 0→1 across the dwell stretch, from
+      // where the first trigger ENDS (card fully expanded, coreVh into the
+      // container) to shortly before the sticky canvas releases. The sticky is
+      // window.innerHeight tall, so it detaches when scroll reaches
+      // (containerHeight - viewportHeight); we finish the fade a touch earlier
+      // via DWELL_FADE_MARGIN_VH so the canvas is already fully on Lino before
+      // SaveTheDate slides up underneath. Same getBoundingClientRect-fraction
+      // measuring as the first trigger, for the same mobile-vh robustness, and
+      // `start`/`end` as functions so they recompute on resize.
+      const DWELL_FADE_MARGIN_VH = 15; // finish this much scroll before release
+      dwellTween = gsap.to(dwellState, {
+        value: 1,
+        ease: "none",
+        scrollTrigger: {
+          trigger: container,
+          start: () => {
+            const totalVh = (IMAGE_FILES.length + 1) * 100 + CLOSING_DWELL_VH;
+            const coreVh = (IMAGE_FILES.length + 1) * 100;
+            const h = container!.getBoundingClientRect().height;
+            return `top+=${h * (coreVh / totalVh)} top`;
+          },
+          end: () => {
+            const totalVh = (IMAGE_FILES.length + 1) * 100 + CLOSING_DWELL_VH;
+            const h = container!.getBoundingClientRect().height;
+            // Release point (container bottom minus one viewport), pulled in by
+            // the safety margin, expressed as a fraction of container height.
+            const releaseVh = totalVh - 100 - DWELL_FADE_MARGIN_VH;
+            return `top+=${h * (releaseVh / totalVh)} top`;
+          },
           scrub: 1,
         },
       });
@@ -682,6 +1165,11 @@ export default function SpiralGallery() {
       function animate() {
         updateSpiral(progressState.value);
         composer!.render();
+        // Separate render pass for the CSS3D layer (the closing card) —
+        // CSS3DRenderer walks the same `scene`/`group` graph but only acts
+        // on CSS3DObject entries, ignoring the WebGL meshes.
+        cssRenderer!.render(scene, camera);
+
         animationId = requestAnimationFrame(animate);
       }
       animationId = requestAnimationFrame(animate);
@@ -691,6 +1179,7 @@ export default function SpiralGallery() {
         camera.updateProjectionMatrix();
         renderer!.setSize(window.innerWidth, window.innerHeight);
         composer!.setSize(window.innerWidth, window.innerHeight);
+        cssRenderer!.setSize(window.innerWidth, window.innerHeight);
         // heroFitZ depends on viewport aspect — recompute so the hero keeps
         // fitting the viewport after a resize/rotation.
         heroFitZ = computeHeroFitZ(
@@ -698,6 +1187,12 @@ export default function SpiralGallery() {
           window.innerWidth / window.innerHeight,
           CAMERA_FOV
         );
+        restingCameraZ = computeRestingCameraZ(
+          widths[0],
+          window.innerWidth / window.innerHeight,
+          CAMERA_FOV
+        );
+        closingExpandScale = computeClosingExpandScale();
       };
       window.addEventListener("resize", onResize);
 
@@ -710,6 +1205,7 @@ export default function SpiralGallery() {
         window.removeEventListener("resize", onResize);
         gsap.ticker.remove(tickerCallback);
         scrollTween.kill();
+        dwellTween?.kill();
         ScrollTrigger.getAll().forEach((st) => st.kill());
         lenis.destroy();
         geometries.forEach((g) => g.dispose());
@@ -719,6 +1215,9 @@ export default function SpiralGallery() {
         renderer.dispose();
         if (renderer.domElement.parentElement === mount) {
           mount!.removeChild(renderer.domElement);
+        }
+        if (cssRenderer && cssRenderer.domElement.parentElement === cssMount) {
+          cssMount!.removeChild(cssRenderer.domElement);
         }
       }
     }
@@ -731,6 +1230,7 @@ export default function SpiralGallery() {
       if (onResize) window.removeEventListener("resize", onResize);
       if (tickerCallback) gsap.ticker.remove(tickerCallback);
       if (scrollTween) scrollTween.kill();
+      if (dwellTween) dwellTween.kill();
       ScrollTrigger.getAll().forEach((st) => st.kill());
       if (lenis) lenis.destroy();
 
@@ -744,22 +1244,63 @@ export default function SpiralGallery() {
           mount.removeChild(renderer.domElement);
         }
       }
+      if (cssRenderer && cssRenderer.domElement.parentElement === cssMount) {
+        cssMount.removeChild(cssRenderer.domElement);
+      }
     };
   }, []);
 
   return (
-    <div ref={containerRef} style={{ height: `${IMAGE_FILES.length * 100}vh` }}>
+    <div
+      ref={containerRef}
+      style={{
+        height: `${(IMAGE_FILES.length + 1) * 100 + CLOSING_DWELL_VH}vh`,
+      }}
+    >
+      {/* `sticky`, not `fixed`: fixed pins to the viewport for the entire
+          page, so once the scroll passes this container's own height the
+          canvas would stay glued on top of every section that comes after
+          it (SaveTheDate included), blocking it forever. Sticky only pins
+          while its parent (`containerRef`, height (N+1)*100vh) is in view —
+          it releases naturally the moment scroll passes the container's
+          bottom edge, exactly like the hand-off the closing card's white
+          crossfade is built for. */}
       <div
         ref={mountRef}
         style={{
-          position: "fixed",
+          position: "sticky",
           top: 0,
           left: 0,
           width: "100vw",
           height: "100vh",
-          background: "#e8e1d1",
+          background: "#e4dfd4",
         }}
       />
+      {/* CSS3D layer for the closing card — painted above the WebGL canvas
+          (later in DOM order, same sticky positioning so it releases in
+          lockstep with the canvas above) since it only becomes visible
+          right at the end, when nothing else should be in front of it
+          anyway. pointerEvents:none by default so it never blocks
+          scroll/clicks; the card itself re-enables pointer-events once
+          revealed (see `cardEl.style.pointerEvents` in the effect above). */}
+      <div
+        ref={cssMountRef}
+        style={{
+          position: "sticky",
+          top: 0,
+          left: 0,
+          width: "100vw",
+          height: "100vh",
+          marginTop: "-100vh",
+          pointerEvents: "none",
+          zIndex: 1,
+        }}
+      />
+      {closingCardEl &&
+        createPortal(
+          <ClosingInvitation portrait={closingPortrait} />,
+          closingCardEl
+        )}
     </div>
   );
 }

@@ -1,22 +1,54 @@
 @import "tailwindcss";
 
-/* Warm cream / ivory wedding palette (from the "save the date" shoot) */
+/* Official wedding palette */
 :root {
-  --background: #e8e1d1; /* base cream */
-  --background-alt: #ded5c2; /* slightly deeper cream for panels/sections */
-  --foreground: #4a4034; /* warm dark brown for body text on cream */
-  --accent: #a1846a; /* muted taupe/tan accent (mustard-brown from the photos) */
-  --accent-strong: #6f5b45; /* deeper brown for emphasis */
+  --background: #f1f0ec; /* Cloud Dancer */
+  --background-alt: #e4dfd4; /* Lino envejecido */
+  --foreground: #3a3733; /* Grafito cálido */
+  --foreground-secondary: #6b6659; /* Gris topo */
+  --accent: #b08d57; /* Bronce viejo (dorado) */
+  --accent-strong: #1b3a5c; /* Marino vintage (azul principal) */
+  --blue-soft: #8fa5ae; /* Azul polvoriento */
+  --brown-light: #c9b79c; /* Camel apagado */
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-background-alt: var(--background-alt);
   --color-foreground: var(--foreground);
+  --color-foreground-secondary: var(--foreground-secondary);
   --color-accent: var(--accent);
   --color-accent-strong: var(--accent-strong);
+  --color-blue-soft: var(--blue-soft);
+  --color-brown-light: var(--brown-light);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+}
+
+/* SaveTheDate's canvas→HTML handoff background.
+   PORTRAIT (mobile): the SpiralGallery canvas hands off on Cloud Dancer
+   (--background), so this section receives it and eases down to Lino
+   (--background-alt) with a gradient — reads perfectly on tall viewports.
+   LANDSCAPE (desktop): the canvas plays that same Cloud-Dancer→Lino fade
+   INSIDE itself across the closing dwell (see the dwellState crossfade in
+   SpiralGallery.tsx), releasing already on Lino — so the HTML must START on
+   solid Lino to match, no gradient, or the join reads as a hard seam.
+   `orientation` mirrors the canvas's own `innerHeight > innerWidth` portrait test. */
+.save-the-date-bg {
+  background: linear-gradient(
+    to bottom,
+    var(--background) 0,
+    var(--background-alt) 420px
+  );
+}
+@media (orientation: landscape) {
+  .save-the-date-bg {
+    background: var(--background-alt);
+  }
+}
+
+html {
+  background: var(--background);
 }
 
 body {
