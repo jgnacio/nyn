@@ -3,7 +3,7 @@
 import gsap from "gsap";
 import * as React from "react";
 import { useEffect, useMemo, useRef } from "react";
-import type { GalleryImage } from "./gallery-types";
+import type { GalleryMedia } from "./gallery-types";
 
 // Adapted from Originkit's "Infinity Canvas" component
 // (https://www.originkit.dev/components/infinitegallery). The original is
@@ -24,7 +24,7 @@ interface InfiniteGalleryProps {
   width?: string | number;
   height?: string | number;
   className?: string;
-  images: GalleryImage[];
+  images: GalleryMedia[];
   density: number;
   imageWidth: number;
   imageHeight: number;
@@ -100,6 +100,14 @@ type Tile = {
 const PX_PER_UNIT = 6;
 const CELL_SIZE = 110;
 const MAX_RANGE = 20;
+
+// The plane tiles infinitely and each tile picks its media at random, so the
+// SAME clip can be on screen in a dozen tiles at once — each one its own
+// decoder. Only this many are ever allowed to play; the rest sit paused on
+// their poster frame. Ranked per frame by on-screen prominence (see
+// `applyVideoPlayback`), so the clips that do play are the big, central,
+// fully-opaque ones the eye is actually on.
+const MAX_CONCURRENT_VIDEOS = 4;
 
 /**
  * InfiniteGallery — flat-plane infinite gallery with true infinite zoom via
@@ -243,15 +251,27 @@ export default function InfiniteGallery(props: InfiniteGalleryProps) {
     });
     if (container) ro.observe(container);
 
+    type TileMedia = HTMLImageElement | HTMLVideoElement;
+
     const layerPools = new Map<
       number,
-      { tileEls: Map<string, HTMLDivElement>; imgEls: Map<string, HTMLImageElement> }
+      { tileEls: Map<string, HTMLDivElement>; mediaEls: Map<string, TileMedia> }
     >();
+
+    // Detaching a <video> from the DOM does not stop it: it keeps its decoder
+    // and any in-flight fetch alive. Every teardown path has to go through
+    // here, or scrolling past a clip leaks a decoder for the page's lifetime.
+    const releaseMedia = (media: TileMedia | undefined) => {
+      if (!media || !(media instanceof HTMLVideoElement)) return;
+      media.pause();
+      media.removeAttribute("src");
+      media.load();
+    };
 
     const getPool = (octave: number) => {
       let pool = layerPools.get(octave);
       if (!pool) {
-        pool = { tileEls: new Map(), imgEls: new Map() };
+        pool = { tileEls: new Map(), mediaEls: new Map() };
         layerPools.set(octave, pool);
       }
       return pool;
@@ -263,8 +283,9 @@ export default function InfiniteGallery(props: InfiniteGalleryProps) {
       pool.tileEls.forEach((el) => {
         if (el.parentNode === scene) scene.removeChild(el);
       });
+      pool.mediaEls.forEach(releaseMedia);
       pool.tileEls.clear();
-      pool.imgEls.clear();
+      pool.mediaEls.clear();
       layerPools.delete(octave);
     };
 
@@ -277,8 +298,9 @@ export default function InfiniteGallery(props: InfiniteGalleryProps) {
       if (!pool) return;
       const el = pool.tileEls.get(key);
       if (el && el.parentNode === scene) scene.removeChild(el);
+      releaseMedia(pool.mediaEls.get(key));
       pool.tileEls.delete(key);
-      pool.imgEls.delete(key);
+      pool.mediaEls.delete(key);
     };
 
     const ensureTile = (t: Tile): HTMLDivElement => {
@@ -295,22 +317,42 @@ export default function InfiniteGallery(props: InfiniteGalleryProps) {
         el.style.pointerEvents = "none";
         el.dataset.tileKey = key;
 
-        const img = document.createElement("img");
-        const src = safeImages[t.imgIdx];
-        img.src = src?.src || "";
-        img.alt = src?.alt || "";
-        img.draggable = false;
-        img.style.width = "100%";
-        img.style.height = "100%";
-        img.style.objectFit = "cover";
-        img.style.display = "block";
-        img.style.pointerEvents = "none";
-        img.style.userSelect = "none";
-        el.appendChild(img);
+        const item = safeImages[t.imgIdx];
+        let media: TileMedia;
+        if (item?.kind === "video") {
+          // `preload="none"` matters: a tile is created as soon as it enters
+          // the projected range, long before it is one of the few allowed to
+          // play. Without it, every video tile would start buffering on
+          // creation. The first play() call is what triggers the fetch.
+          const videoEl = document.createElement("video");
+          videoEl.src = item.src;
+          if (item.poster) videoEl.poster = item.poster;
+          videoEl.loop = true;
+          videoEl.muted = true;
+          videoEl.defaultMuted = true;
+          videoEl.playsInline = true;
+          videoEl.autoplay = false;
+          videoEl.controls = false;
+          videoEl.preload = "none";
+          media = videoEl;
+        } else {
+          const imgEl = document.createElement("img");
+          imgEl.src = item?.src || "";
+          imgEl.alt = item?.alt || "";
+          imgEl.draggable = false;
+          media = imgEl;
+        }
+        media.style.width = "100%";
+        media.style.height = "100%";
+        media.style.objectFit = "cover";
+        media.style.display = "block";
+        media.style.pointerEvents = "none";
+        media.style.userSelect = "none";
+        el.appendChild(media);
 
         scene.appendChild(el);
         pool.tileEls.set(key, el);
-        pool.imgEls.set(key, img);
+        pool.mediaEls.set(key, media);
       }
       return el;
     };
@@ -358,7 +400,7 @@ export default function InfiniteGallery(props: InfiniteGalleryProps) {
         const s = t.bakedScale * layerScale;
 
         const el = ensureTile(t);
-        const img = pool.imgEls.get(key);
+        const media = pool.mediaEls.get(key);
 
         const wPx = t.w * PX_PER_UNIT;
         const hPx = t.h * PX_PER_UNIT;
@@ -368,9 +410,26 @@ export default function InfiniteGallery(props: InfiniteGalleryProps) {
         el.style.height = `${hPx}px`;
         el.style.opacity = String(layerAlpha);
 
-        if (img) {
+        if (media) {
           const radiusPx = (safeRounded / 20) * (Math.min(wPx, hPx) / 2);
-          img.style.borderRadius = `${radiusPx}px`;
+          media.style.borderRadius = `${radiusPx}px`;
+
+          if (media instanceof HTMLVideoElement) {
+            // Rank by rendered area, weighted by the layer's opacity (a tile
+            // in the fading-out octave should yield to an equally large one
+            // in the incoming octave) and falling off with distance from the
+            // viewport center. Tiles fully off screen score 0 and never win.
+            const renderedW = wPx * s;
+            const renderedH = hPx * s;
+            const onScreen =
+              Math.abs(dxPx) < cW / 2 + renderedW / 2 &&
+              Math.abs(dyPx) < cH / 2 + renderedH / 2;
+            const centerDist = Math.hypot(dxPx, dyPx);
+            const score = onScreen
+              ? (renderedW * renderedH * layerAlpha) / (1 + centerDist)
+              : 0;
+            videoCandidates.push({ media, score });
+          }
         }
 
         orderKeys[i] = key;
@@ -391,6 +450,30 @@ export default function InfiniteGallery(props: InfiniteGalleryProps) {
 
     let lastOctaves: Set<number> = new Set();
 
+    // Refilled every frame by `projectLayer` (which runs once per octave), then
+    // drained by `applyVideoPlayback` once both octaves have been projected —
+    // the ranking has to see all candidates before it can pick the top ones.
+    const videoCandidates: { media: HTMLVideoElement; score: number }[] = [];
+
+    const applyVideoPlayback = () => {
+      if (videoCandidates.length > 0) {
+        videoCandidates.sort((a, b) => b.score - a.score);
+        for (let i = 0; i < videoCandidates.length; i++) {
+          const { media, score } = videoCandidates[i];
+          const shouldPlay = i < MAX_CONCURRENT_VIDEOS && score > 0;
+          if (shouldPlay && media.paused) {
+            // Rejects if the browser blocks autoplay. Swallowed: a blocked
+            // clip just keeps showing its poster, which is the same thing a
+            // paused tile shows anyway.
+            void media.play().catch(() => {});
+          } else if (!shouldPlay && !media.paused) {
+            media.pause();
+          }
+        }
+      }
+      videoCandidates.length = 0;
+    };
+
     const project = () => {
       const cx = camX.get();
       const cy = camY.get();
@@ -410,6 +493,7 @@ export default function InfiniteGallery(props: InfiniteGalleryProps) {
 
       projectLayer(octave, scaleCurrent, alphaCurrent, zBaseCurrent, cx, cy);
       projectLayer(octave + 1, scaleNext, alphaNext, zBaseNext, cx, cy);
+      applyVideoPlayback();
 
       const nowOctaves = new Set<number>([octave, octave + 1]);
       for (const o of Array.from(lastOctaves)) {

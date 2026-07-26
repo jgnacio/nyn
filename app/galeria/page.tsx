@@ -1,18 +1,23 @@
 import Button from "../components/Button";
 import InfiniteGallery from "../components/InfiniteGallery";
-import { GALLERY_IMAGES } from "../components/GallerySection";
+import { GALLERY_MEDIA } from "../components/GallerySection";
 
 export const metadata = {
   title: "Galería",
 };
 
-// Fullscreen version of the full photo set, reached via the "Ver fotos"
-// button in GallerySection. Pan/drag + wheel-to-zoom, infinitely tiling.
+// Fullscreen version of the full media set — photos AND clips, unlike the
+// stills-only teaser in GallerySection. Reached via the "Ver fotos" button
+// there. Pan/drag + wheel-to-zoom, infinitely tiling.
+//
+// The root is `w-full`, not `w-screen`: `w-screen` is `100vw`, which
+// overflows the document on iOS Safari — the same bug that left a pale strip
+// down the right edge of the home page.
 export default function GaleriaPage() {
   return (
-    <main className="relative w-screen h-screen overflow-hidden bg-background">
+    <main className="relative w-full h-screen overflow-hidden bg-background">
       <InfiniteGallery
-        images={GALLERY_IMAGES}
+        images={GALLERY_MEDIA}
         density={6}
         imageWidth={240}
         imageHeight={240}

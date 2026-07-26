@@ -113,7 +113,18 @@ export default function ClosingInvitation({
   return (
     <div
       className={`relative w-full h-full flex items-center justify-center overflow-hidden ${framePadding}`}
-      style={{ backgroundColor: CREAM, containerType: "inline-size" }}
+      // `--closing-bg` is driven per-frame by SpiralGallery during the closing
+      // dwell (landscape only) so this card rides the SAME Cloud Dancer -> Lino
+      // handoff the canvas behind it performs. With a fixed CREAM here the card
+      // stayed Cloud Dancer while the canvas faded to Lino underneath it —
+      // and since the expanded card COVERS the canvas, the fade was invisible
+      // and the join to SaveTheDate read as a hard horizontal line.
+      // The fallback keeps this correct on its own in portrait, where
+      // SpiralGallery leaves the property unset on purpose.
+      style={{
+        backgroundColor: `var(--closing-bg, ${CREAM})`,
+        containerType: "inline-size",
+      }}
     >
       <CornerSprig className="pointer-events-none absolute top-0 left-0 w-[18%] h-[18%]" />
       <CornerSprig className="pointer-events-none absolute top-0 right-0 w-[18%] h-[18%] -scale-x-100" />

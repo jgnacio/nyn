@@ -175,8 +175,12 @@ export default function Button(props: ButtonProps) {
     );
   }
 
+  // `type="button"` by default: a <button> with no type is `type="submit"`,
+  // so the moment one of these ends up inside a <form> it submits the page and
+  // the onClick handler's work is lost to a reload. Placed BEFORE the spread so
+  // a caller can still pass an explicit type.
   return (
-    <button className={classes} style={style} {...(rest as ButtonAsButton)}>
+    <button type="button" className={classes} style={style} {...(rest as ButtonAsButton)}>
       {inner}
     </button>
   );

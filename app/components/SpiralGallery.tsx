@@ -2,6 +2,18 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { GOLD } from "./ClosingInvitation";
+import {
+  HERO_TITLE,
+  HERO_VERSE,
+  HT_PAD,
+  HT_RULE_GAP,
+  HT_TITLE_SIZE,
+  HT_TITLE_TRACK,
+  HT_VERSE_GAP,
+  HT_VERSE_SIZE,
+  HT_VERSE_TRACK,
+} from "./hero-wordmark";
 import * as THREE from "three";
 import { CSS3DRenderer, CSS3DObject } from "three/examples/jsm/renderers/CSS3DRenderer.js";
 import {
@@ -422,6 +434,166 @@ function createCurvedPlaneGeometry(
   return geometry;
 }
 
+// --- Hero title, rendered INSIDE the 3D scene ---------------------------
+// Deliberately NOT an HTML overlay: an absolutely-positioned <div> sits in a
+// different space than the canvas, so it neither respects the camera nor
+// participates in the scroll-driven pull-back — it just floats on top and
+// covers the render. Instead the title is painted to a 2D canvas, uploaded as
+// a texture, and hung on a plane PARENTED TO THE CAMERA, locked to the camera→
+// origin distance (i.e. exactly the DepthOfFieldEffect's focus plane, so it
+// never picks up bokeh) and animated off the scroll progress.
+// The strings and the type metrics live in ./hero-wordmark, shared with
+// SplashScreen — see the note there on why they are not declared here.
+//
+// Canvas 2D has no reliable cross-browser `letterSpacing`, so the verse's
+// tracking is applied by advancing per glyph by hand.
+
+// Blur radius of the dark halo painted under the hero title. Referenced by the
+// canvas sizing too — the blur spreads ink this far past every glyph edge, so
+// it has to be budgeted into the padding or the glow is sliced off flat.
+const HERO_SHADOW_BLUR = 26;
+
+// Real INK bounds of a tracked run, which is not the same thing as its advance
+// width. `measureText().width` is the advance — how far the pen moves — and for
+// a script face like Parisienne the painted glyph reaches well outside that on
+// both sides (entry/exit strokes, swashes) and far above the em size
+// (ascenders, the capital's flourish). Sizing the canvas off the advance and
+// the font size therefore clips the wordmark. `actualBoundingBox*` reports
+// where the pixels actually land, so measure with that instead.
+type InkBox = {
+  left: number; // ink extent LEFT of the start pen position (positive = overhang)
+  right: number; // ink extent right of the start pen position
+  ascent: number; // ink above the baseline
+  descent: number; // ink below the baseline
+};
+
+function measureTrackedInk(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  tracking: number
+): InkBox {
+  let cx = 0;
+  let left = 0;
+  let right = 0;
+  let ascent = 0;
+  let descent = 0;
+
+  for (const ch of text) {
+    const m = ctx.measureText(ch);
+    // A blank glyph reports zero/undefined bounds in some engines — it
+    // contributes advance but no ink, so only the pen position moves.
+    left = Math.min(left, cx - (m.actualBoundingBoxLeft || 0));
+    right = Math.max(right, cx + (m.actualBoundingBoxRight || 0));
+    ascent = Math.max(ascent, m.actualBoundingBoxAscent || 0);
+    descent = Math.max(descent, m.actualBoundingBoxDescent || 0);
+    cx += m.width + tracking;
+  }
+
+  // Guard for an all-blank run, and never report less than the advance.
+  right = Math.max(right, cx - tracking);
+  return { left, right, ascent, descent };
+}
+
+function drawTracked(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  tracking: number
+) {
+  let cx = x;
+  for (const ch of text) {
+    ctx.fillText(ch, cx, y);
+    cx += ctx.measureText(ch).width + tracking;
+  }
+}
+
+// Builds the title canvas at exactly the size its content needs (measured in a
+// first pass), so the resulting plane has no dead padding that would throw off
+// the top-left corner margin.
+function createHeroTextCanvas(): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d")!;
+
+  // Same pairing as the Footer's closing "Ignacio & Nicol": next/font exposes
+  // the real families through CSS variables on <html>; fall back to generic
+  // stacks if they haven't resolved yet.
+  const script =
+    getComputedStyle(document.documentElement)
+      .getPropertyValue("--font-parisienne")
+      .trim() || "cursive";
+  const serif =
+    getComputedStyle(document.documentElement)
+      .getPropertyValue("--font-cormorant")
+      .trim() || "serif";
+
+  const title = HERO_TITLE;
+  const verse = HERO_VERSE;
+  const titleFont = `400 ${HT_TITLE_SIZE}px ${script}`;
+  const verseFont = `italic 400 ${HT_VERSE_SIZE}px ${serif}`;
+
+  ctx.font = titleFont;
+  const titleInk = measureTrackedInk(ctx, title, HT_TITLE_TRACK);
+  ctx.font = verseFont;
+  const verseInk = measureTrackedInk(ctx, verse, HT_VERSE_TRACK);
+
+  // The halo is painted with a 26px blur, which spreads ink that far past every
+  // glyph edge in all four directions. It has to be part of the padding or the
+  // glow gets sliced off flat against the canvas border.
+  const pad = HT_PAD + HERO_SHADOW_BLUR;
+
+  // Both runs are drawn from the same pen X, so the box spans the union of
+  // their ink. `ink.left` is negative when a glyph overhangs to the left of the
+  // pen; shifting the origin right by that amount brings the overhang inside.
+  const inkLeft = Math.min(titleInk.left, verseInk.left);
+  const inkRight = Math.max(titleInk.right, verseInk.right);
+  const originX = pad - inkLeft;
+
+  // Baselines derived from measured ink, NOT from the font size: the ascent of
+  // a script face exceeds its em size, so `pad + HT_TITLE_SIZE` put the
+  // baseline too high and cut the tops off.
+  const titleBaseline = pad + titleInk.ascent;
+  // Clear the title's descenders (the "g" in Ignacio) before the rule.
+  const ruleY = titleBaseline + titleInk.descent + HT_RULE_GAP;
+  const verseBaseline = ruleY + HT_VERSE_GAP + verseInk.ascent;
+
+  canvas.width = Math.ceil(inkRight - inkLeft + pad * 2);
+  canvas.height = Math.ceil(verseBaseline + verseInk.descent + pad);
+
+  // Resizing the canvas resets the 2D context, so every draw-state assignment
+  // below has to come AFTER the width/height writes.
+  ctx.textBaseline = "alphabetic";
+  ctx.textAlign = "left";
+
+  // Dark halo under everything: the text is now white, so the hero photo
+  // behind this corner can be any brightness and the ink still needs to
+  // separate from bright patches. Two passes because a single soft shadow is
+  // too faint to separate the glyphs.
+  ctx.shadowColor = "rgba(20,17,14,0.55)";
+  ctx.shadowBlur = HERO_SHADOW_BLUR;
+  ctx.fillStyle = "#ffffff";
+  ctx.font = titleFont;
+  for (let pass = 0; pass < 2; pass++) {
+    drawTracked(ctx, title, originX, titleBaseline, HT_TITLE_TRACK);
+  }
+  ctx.font = verseFont;
+  ctx.fillStyle = "#ffffff";
+  drawTracked(ctx, verse, originX, verseBaseline, HT_VERSE_TRACK);
+
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = "#ffffff";
+  ctx.font = titleFont;
+  drawTracked(ctx, title, originX, titleBaseline, HT_TITLE_TRACK);
+
+  ctx.fillStyle = GOLD;
+  ctx.fillRect(originX, ruleY, Math.min(96, inkRight - inkLeft), 2);
+
+  ctx.font = verseFont;
+  drawTracked(ctx, verse, originX, verseBaseline, HT_VERSE_TRACK);
+
+  return canvas;
+}
+
 export default function SpiralGallery() {
   const mountRef = useRef<HTMLDivElement>(null);
   const cssMountRef = useRef<HTMLDivElement>(null);
@@ -466,6 +638,7 @@ export default function SpiralGallery() {
     let lenis: Lenis | null = null;
     let scrollTween: gsap.core.Tween | null = null;
     let dwellTween: gsap.core.Tween | null = null;
+    let heroTextTween: gsap.core.Tween | null = null;
     let tickerCallback: ((time: number) => void) | null = null;
     let onResize: (() => void) | null = null;
     const geometries: THREE.BufferGeometry[] = [];
@@ -588,6 +761,11 @@ export default function SpiralGallery() {
       // lerpColors, never reallocated.
       const sceneBgCream = new THREE.Color(0xe4dfd4);
       const sceneBgWhite = new THREE.Color(0xf1f0ec);
+
+      // Scratch color for the closing card's own background ramp during the
+      // dwell (see the `--closing-bg` block in updateSpiral). Allocated once
+      // here rather than per frame — this runs inside the rAF loop.
+      const cardBgColor = new THREE.Color();
 
       const camera = new THREE.PerspectiveCamera(
         CAMERA_FOV,
@@ -819,6 +997,103 @@ export default function SpiralGallery() {
       // One EffectPass batches the screen-space effects efficiently.
       composer.addPass(new EffectPass(camera, dof, vignette, noise));
 
+      // --- Hero title mesh (see createHeroTextCanvas above) ---------------
+      // Parented to the CAMERA, not to `scene`/`group`: it must hold the same
+      // screen corner no matter where the scroll-driven camera has travelled
+      // to. A camera child only gets its world matrix updated if the camera
+      // itself is part of the graph, hence the scene.add(camera).
+      scene.add(camera);
+
+      const heroTextCanvas = createHeroTextCanvas();
+      // `let`: the webfont swap below re-measures the canvas, and the plane's
+      // proportion has to follow it or the title stretches.
+      let heroTextAspect = heroTextCanvas.width / heroTextCanvas.height;
+      const heroTextTexture = new THREE.CanvasTexture(heroTextCanvas);
+      heroTextTexture.colorSpace = THREE.SRGBColorSpace;
+      heroTextTexture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      textures.push(heroTextTexture);
+
+      const heroTextGeometry = new THREE.PlaneGeometry(1, 1);
+      geometries.push(heroTextGeometry);
+      const heroTextMaterial = new THREE.MeshBasicMaterial({
+        map: heroTextTexture,
+        transparent: true,
+        opacity: 0,
+        // The plane rides in front of everything by construction (it sits on
+        // the camera→origin focus plane, and the hero photo sits AT the
+        // origin), but depth-testing it against the curved panels would still
+        // clip it the moment a spiral turn swings closer. Draw it last,
+        // unconditionally.
+        depthTest: false,
+        depthWrite: false,
+        // Fog is distance-based and this plane is always ~one focus distance
+        // out — well inside fog.near — but pinning it off makes that
+        // independent of any future fog retune.
+        fog: false,
+      });
+      materials.push(heroTextMaterial);
+
+      const heroTextMesh = new THREE.Mesh(heroTextGeometry, heroTextMaterial);
+      heroTextMesh.renderOrder = 10;
+      heroTextMesh.visible = false;
+      camera.add(heroTextMesh);
+
+      // Geometry/placement are stored NORMALIZED to a camera distance of 1 and
+      // multiplied by the live focus distance each frame. Everything in a
+      // perspective frustum scales linearly with distance, so this keeps the
+      // title at a fixed apparent size and a fixed screen corner even while the
+      // camera is pulling back.
+      let htUnitW = 0;
+      let htUnitH = 0;
+      let htUnitX = 0;
+      let htUnitY = 0;
+      let htVisibleH1 = 0;
+
+      function layoutHeroText() {
+        const aspect = window.innerWidth / window.innerHeight;
+        // Visible extents at distance 1 from the camera.
+        htVisibleH1 = 2 * Math.tan(THREE.MathUtils.degToRad(CAMERA_FOV) / 2);
+        const visibleW1 = htVisibleH1 * aspect;
+        // Narrow/portrait viewports need the block to take a larger share of
+        // the width or the tracked caps become unreadable; wide desktops need
+        // it to stay a discreet corner mark.
+        const widthFrac = THREE.MathUtils.clamp(0.44 / aspect, 0.24, 0.66);
+        htUnitW = visibleW1 * widthFrac;
+        htUnitH = htUnitW / heroTextAspect;
+        const marginX = visibleW1 * 0.055;
+        const marginY = htVisibleH1 * 0.07;
+        htUnitX = -visibleW1 / 2 + marginX + htUnitW / 2;
+        htUnitY = htVisibleH1 / 2 - marginY - htUnitH / 2;
+      }
+      layoutHeroText();
+
+      // Entrance fade, independent of scroll — the title settles in on load and
+      // is then handed over to the scroll-driven ramp in updateSpiral.
+      const heroTextIntro = { value: 0 };
+      heroTextTween = gsap.to(heroTextIntro, {
+        value: 1,
+        duration: 1.8,
+        delay: 0.45,
+        ease: "power2.out",
+      });
+
+      // Smoothed scroll velocity in progress-units/frame. Drives the small
+      // lag/overshoot that makes the title feel physically attached to the
+      // wheel rather than hard-locked to the corner.
+      let htPrevP = 0;
+      let htVel = 0;
+
+      // Re-render the texture once the real webfont has loaded — the first
+      // paint can land on the fallback family, which measures differently.
+      document.fonts?.ready.then(() => {
+        if (cancelled) return;
+        const refreshed = createHeroTextCanvas();
+        heroTextTexture.image = refreshed;
+        heroTextTexture.needsUpdate = true;
+        heroTextAspect = refreshed.width / refreshed.height;
+        layoutHeroText();
+      });
+
       const progressState = { value: 0 };
 
       // Dwell-phase progress (0..1), driven by a SECOND ScrollTrigger over the
@@ -1009,6 +1284,16 @@ export default function SpiralGallery() {
         if (!closingPortrait) {
           (scene.background as THREE.Color).lerp(sceneBgCream, dwellState.value);
           (scene.fog as THREE.Fog).color.lerp(sceneBgCream, dwellState.value);
+
+          // The card is expanded to COVER the viewport by this point, so the
+          // canvas fade above happens entirely behind it and would never be
+          // seen. Drive the card's own background through the identical
+          // Cloud Dancer -> Lino ramp (via the `--closing-bg` custom property
+          // ClosingInvitation reads) so the surface actually on screen is the
+          // one that lands on Lino — the exact color SaveTheDate starts on in
+          // landscape. Without this the handoff is a hard horizontal line.
+          cardBgColor.lerpColors(sceneBgWhite, sceneBgCream, dwellState.value);
+          cardEl.style.setProperty("--closing-bg", `#${cardBgColor.getHexString()}`);
         }
 
         // Fade the screen-space vignette (and film grain) out in lockstep with
@@ -1064,6 +1349,53 @@ export default function SpiralGallery() {
           camEased
         );
         camera.lookAt(CAMERA_LOOK_AT.x, CAMERA_LOOK_AT.y, CAMERA_LOOK_AT.z);
+
+        // --- Hero title -------------------------------------------------
+        // Placed AFTER the camera block on purpose: it reads this frame's
+        // final camera position.
+        //
+        // The camera always lookAt()s the origin, so its local -Z axis points
+        // straight at it and the camera→origin distance IS the depth of the
+        // DoF focus plane. Sitting the title exactly there means it stays
+        // razor-sharp while the spiral turns around it blur, and — since all
+        // its placement values are normalized to distance 1 — its apparent
+        // size stays put even as the camera recedes from heroFitZ to
+        // restingCameraZ.
+        const htDist = camera.position.distanceTo(CAMERA_LOOK_AT);
+
+        // Smoothed d(progress)/frame. Exponential smoothing rather than the
+        // raw delta so a wheel notch reads as a soft drag-and-settle instead
+        // of a jitter, and clamped so a fast flick can't fling the title.
+        htVel += ((p - htPrevP) - htVel) * 0.12;
+        htPrevP = p;
+        const htVelNorm = THREE.MathUtils.clamp(htVel * 14, -1, 1);
+
+        // Departure ramp. It holds through the very start of the scroll (so
+        // the title reads as a title), then leaves across roughly the same
+        // stretch the camera uses to pull back and the spiral to assemble —
+        // accompanying that motion rather than mirroring it. smoothstep, so
+        // it eases out of the hold and into the exit instead of snapping.
+        const htT = THREE.MathUtils.clamp((p - 0.15) / 0.8, 0, 1);
+        const htEased = htT * htT * (3 - 2 * htT);
+
+        // Drifts up and slightly further into the corner as it goes — the
+        // opposite direction to the receding photos, which keeps the two
+        // motions readable as separate layers. The velocity term rides on top
+        // as a lag: scrolling down lets the title trail downward a touch
+        // before it catches up.
+        const htDriftY = htEased * htVisibleH1 * 0.07 - htVelNorm * htVisibleH1 * 0.022;
+        const htDriftX = -htEased * htVisibleH1 * 0.02 - htVelNorm * htVisibleH1 * 0.008;
+
+        const htScale = htDist * (1 - htEased * 0.1);
+        heroTextMesh.scale.set(htUnitW * htScale, htUnitH * htScale, 1);
+        heroTextMesh.position.set(
+          (htUnitX + htDriftX) * htDist,
+          (htUnitY + htDriftY) * htDist,
+          -htDist
+        );
+
+        heroTextMaterial.opacity = heroTextIntro.value * (1 - htEased);
+        heroTextMesh.visible = heroTextMaterial.opacity > 0.002;
       }
 
       updateSpiral(0);
@@ -1206,6 +1538,7 @@ export default function SpiralGallery() {
         gsap.ticker.remove(tickerCallback);
         scrollTween.kill();
         dwellTween?.kill();
+        heroTextTween?.kill();
         ScrollTrigger.getAll().forEach((st) => st.kill());
         lenis.destroy();
         geometries.forEach((g) => g.dispose());
@@ -1231,6 +1564,7 @@ export default function SpiralGallery() {
       if (tickerCallback) gsap.ticker.remove(tickerCallback);
       if (scrollTween) scrollTween.kill();
       if (dwellTween) dwellTween.kill();
+      if (heroTextTween) heroTextTween.kill();
       ScrollTrigger.getAll().forEach((st) => st.kill());
       if (lenis) lenis.destroy();
 
@@ -1254,6 +1588,7 @@ export default function SpiralGallery() {
     <div
       ref={containerRef}
       style={{
+        position: "relative",
         height: `${(IMAGE_FILES.length + 1) * 100 + CLOSING_DWELL_VH}vh`,
       }}
     >
@@ -1271,7 +1606,14 @@ export default function SpiralGallery() {
           position: "sticky",
           top: 0,
           left: 0,
-          width: "100vw",
+          // `100%`, NOT `100vw`: on iOS Safari `100vw` resolves against the
+          // layout viewport and does not account for the document's actual
+          // usable width, so it came out WIDER than the page. That pushed the
+          // document into horizontal overflow, and since sibling sections are
+          // sized off the containing block (not the overflowed content), they
+          // stayed viewport-wide — leaving a pale strip down the right edge
+          // once the page was scrolled sideways.
+          width: "100%",
           height: "100vh",
           background: "#e4dfd4",
         }}
@@ -1289,7 +1631,8 @@ export default function SpiralGallery() {
           position: "sticky",
           top: 0,
           left: 0,
-          width: "100vw",
+          // `100%` for the same reason as the WebGL layer above.
+          width: "100%",
           height: "100vh",
           marginTop: "-100vh",
           pointerEvents: "none",

@@ -1,12 +1,12 @@
 import Button from "./Button";
 import { CREAM_ALT, GOLD, TEXT_SECONDARY } from "./ClosingInvitation";
 import ImageGallery from "./ImageGallery";
-import type { GalleryImage } from "./gallery-types";
+import type { GalleryImage, GalleryMedia } from "./gallery-types";
 
-// Same 16 photos used by SpiralGallery (app/components/SpiralGallery.tsx),
-// reused here for the animated teaser and the full /galeria page. Shared
-// {src} object shape (GalleryImage) so both ImageGallery and InfiniteGallery
-// take the exact same `images` prop format.
+// Stills only. The first 16 are the same photos SpiralGallery uses
+// (app/components/SpiralGallery.tsx); the `g*` ones are the second batch.
+// This is what the teaser below renders, since ImageGallery cannot play
+// video — the clips live in GALLERY_MEDIA instead.
 export const GALLERY_IMAGES: GalleryImage[] = [
   "DSC_4522.webp",
   "DSC_4550.webp",
@@ -24,7 +24,66 @@ export const GALLERY_IMAGES: GalleryImage[] = [
   "DSC_4613.webp",
   "DSC_4625.webp",
   "DSC_4626.webp",
+  "g01.webp",
+  "g02.webp",
+  "g03.webp",
+  "g04.webp",
+  "g05.webp",
+  "g06.webp",
+  "g07.webp",
+  "g08.webp",
+  "g09.webp",
+  "g11.webp",
+  "g12.webp",
+  "g13.webp",
+  "g14.webp",
+  "g15.webp",
+  "g16.webp",
+  "g18.webp",
+  "g19.webp",
+  "g20.webp",
+  "g21.webp",
+  "g22.webp",
+  "g24.webp",
+  "g25.webp",
+  "g26.webp",
+  "g27.webp",
+  "g28.webp",
+  "g29.webp",
+  "g30.webp",
+  "g31.webp",
+  "g32.webp",
+  "g33.webp",
+  "g34.webp",
+  "g35.webp",
+  "g36.webp",
+  "g37.webp",
+  "g38.webp",
+  "g39.webp",
+  "g40.webp",
+  "g41.webp",
+  "g42.webp",
+  "g43.webp",
+  "g45.webp",
+  "g46.webp",
 ].map((f) => ({ src: `/images/${f}` }));
+
+// Silent, looping clips. Numbered in the same sequence as the stills above —
+// they're the gaps in the `g*` run (17, 23, 44, 47, 48).
+const GALLERY_VIDEOS: GalleryMedia[] = ["g17", "g23", "g44", "g47", "g48"].map(
+  (f) => ({
+    src: `/videos/${f}.mp4`,
+    poster: `/videos/${f}.poster.webp`,
+    kind: "video" as const,
+  }),
+);
+
+// Stills + clips, for the full-screen /galeria page. Only InfiniteGallery
+// consumes this — it is the one gallery that can render video.
+export const GALLERY_MEDIA: GalleryMedia[] = [
+  ...GALLERY_IMAGES,
+  ...GALLERY_VIDEOS,
+];
 
 // Plain DOM section, same as SaveTheDate — sits right after it in normal
 // document flow (see page.tsx). Shows a small teaser crop of the animated
@@ -36,20 +95,31 @@ export default function GallerySection() {
       className="relative w-full py-20 sm:py-28 overflow-hidden text-center"
       style={{ backgroundColor: CREAM_ALT }}
     >
-      <p
-        className="font-[family-name:var(--font-parisienne)] px-[6%]"
-        style={{ color: GOLD, fontSize: "clamp(2.5rem, 6vw, 4rem)" }}
-      >
-        Nuestros momentos
-      </p>
-      <p
-        className="font-[family-name:var(--font-cormorant)] italic tracking-wide mt-2 px-[6%]"
-        style={{ color: TEXT_SECONDARY, fontSize: "clamp(1rem, 2vw, 1.25rem)" }}
-      >
-        Un vistazo antes del gran día
-      </p>
+      {/* Heading only — the gallery strip below stays full-bleed on purpose.
+          .section-shell (globals.css) keeps this copy on the same desktop
+          measure as every other section under the 3D experience. */}
+      <div className="section-shell">
+        <p
+          className="font-[family-name:var(--font-parisienne)]"
+          style={{ color: GOLD, fontSize: "clamp(2.5rem, 6vw, 4rem)" }}
+        >
+          Nuestros momentos
+        </p>
+        <p
+          className="font-[family-name:var(--font-cormorant)] italic tracking-wide mt-2"
+          style={{
+            color: TEXT_SECONDARY,
+            fontSize: "clamp(1rem, 2vw, 1.25rem)",
+          }}
+        >
+          Un vistazo antes del gran día
+        </p>
+      </div>
 
-      <div className="relative mt-12 w-full overflow-hidden" style={{ height: "min(80vh, 720px)" }}>
+      <div
+        className="relative mt-12 w-full overflow-hidden"
+        style={{ height: "min(80vh, 720px)" }}
+      >
         <ImageGallery
           images={GALLERY_IMAGES}
           background="#00000000"
@@ -69,8 +139,15 @@ export default function GallerySection() {
           imageScale={5}
           rounded={12}
           blankArea={45}
-          appear={{ style: "outToIn", ease: { duration: 2, delay: 1.2, ease: "easeInOut" } }}
-          disappear={{ style: "outToIn", ease: { duration: 1, ease: "easeInOut" }, fadeOut: 100 }}
+          appear={{
+            style: "outToIn",
+            ease: { duration: 2, delay: 1.2, ease: "easeInOut" },
+          }}
+          disappear={{
+            style: "outToIn",
+            ease: { duration: 1, ease: "easeInOut" },
+            fadeOut: 100,
+          }}
         />
 
         {/* Centered, above the gallery's own tiles. ImageGallery's root div

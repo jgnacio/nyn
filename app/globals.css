@@ -47,6 +47,72 @@
   }
 }
 
+/* GallerySection sits on Lino (--background-alt) and UploadPhotos on Cloud
+   Dancer (--background), so butting them together drew a hard horizontal
+   line. UploadPhotos instead OPENS on Lino and eases into Cloud Dancer over
+   its top 220px, absorbing the join into the section itself — same trick as
+   .save-the-date-bg above, which softens the canvas→HTML handoff. Done in CSS
+   rather than inline because a gradient needs the two-stop form and the
+   section already carries a `style` prop for nothing else. */
+.upload-photos-bg {
+  background: linear-gradient(
+    to bottom,
+    var(--background-alt) 0,
+    var(--background) 220px
+  );
+}
+
+/* Mirror of .upload-photos-bg, one step further down the page: UploadPhotos
+   ends on Cloud Dancer, so GiftsSection opens there and eases back to Lino. */
+.gifts-bg {
+  background: linear-gradient(
+    to bottom,
+    var(--background) 0,
+    var(--background-alt) 220px
+  );
+}
+
+/* Shared horizontal shell for every HTML section BELOW the 3D experience.
+   Before this, each section carried its own `px-[6%]` plus its own inner
+   `max-w-*` (3xl here, xl there, none elsewhere). Two problems on desktop:
+   a percentage gutter keeps growing with the viewport while the inner
+   max-width does not, so past ~1400px the padding is pure decoration and the
+   content collapses into a narrow ribbon adrift in white space; and because
+   each section capped at a DIFFERENT max-width, their content edges never
+   lined up vertically down the page.
+   The shell fixes both: one content width for all sections, and a gutter that
+   stops scaling once it has enough room. Mobile keeps the original 6% —
+   that proportional gutter is right on a phone, and the brief was desktop
+   only. Sections still own their vertical rhythm and backgrounds; this is
+   strictly the horizontal box. */
+.section-shell {
+  width: 100%;
+  margin-inline: auto;
+  padding-inline: 6%;
+}
+
+@media (min-width: 1024px) {
+  .section-shell {
+    /* Roughly max-w-5xl. Wide enough that the two-column blocks (SaveTheDate's
+       events, RSVP) breathe, narrow enough to stay a comfortable measure. */
+    max-width: calc(64rem + 2 * 2.5rem);
+    /* Fixed, not percentage: past this point extra viewport width goes to the
+       page margins, not to an ever-widening gutter inside a capped box. */
+    padding-inline: 2.5rem;
+  }
+}
+
+/* DO NOT add `overflow-x: hidden` (or any non-visible `overflow`) to html or
+   body. It was tried here as a guard against sideways scrolling and it broke
+   the whole experience: a non-visible `overflow` turns the element into a
+   scroll container, and `position: sticky` resolves against its nearest
+   scrolling ancestor — so SpiralGallery's two sticky layers stopped pinning
+   to the viewport, the canvas tore loose mid-scroll, and ScrollTrigger/Lenis
+   lost the document scroller they measure against.
+   The iOS right-edge strip is already fixed at its source: those layers use
+   `width: 100%` instead of `100vw` (see SpiralGallery.tsx). If sideways
+   overflow ever comes back, find the element that overflows — do not clamp it
+   here. */
 html {
   background: var(--background);
 }
