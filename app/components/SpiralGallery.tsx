@@ -453,6 +453,10 @@ function createCurvedPlaneGeometry(
 // it has to be budgeted into the padding or the glow is sliced off flat.
 const HERO_SHADOW_BLUR = 26;
 
+// Render layer reserved for the hero title so it can be excluded from the
+// post-processing pass — see where the mesh is created.
+const HERO_TEXT_LAYER = 1;
+
 // Real INK bounds of a tracked run, which is not the same thing as its advance
 // width. `measureText().width` is the advance — how far the pen moves — and for
 // a script face like Parisienne the painted glyph reaches well outside that on
@@ -511,9 +515,23 @@ function drawTracked(
 // Builds the title canvas at exactly the size its content needs (measured in a
 // first pass), so the resulting plane has no dead padding that would throw off
 // the top-left corner margin.
-function createHeroTextCanvas(): HTMLCanvasElement {
+// `scale` multiplies every metric so the texture can be rasterized at the size
+// it will actually occupy in DEVICE pixels. Baking it at one fixed size and
+// letting the GPU resample was the main reason the title read soft on phones:
+// there the block spans ~66% of the viewport (vs ~24% on desktop), so the
+// texture was being stretched/squeezed hardest exactly where it showed most.
+function createHeroTextCanvas(scale = 1): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d")!;
+
+  const pad0 = HT_PAD * scale;
+  const titleSize = HT_TITLE_SIZE * scale;
+  const titleTrack = HT_TITLE_TRACK * scale;
+  const verseSize = HT_VERSE_SIZE * scale;
+  const verseTrack = HT_VERSE_TRACK * scale;
+  const ruleGap = HT_RULE_GAP * scale;
+  const verseGap = HT_VERSE_GAP * scale;
+  const shadowBlur = HERO_SHADOW_BLUR * scale;
 
   // Same pairing as the Footer's closing "Ignacio & Nicol": next/font exposes
   // the real families through CSS variables on <html>; fall back to generic
@@ -529,18 +547,18 @@ function createHeroTextCanvas(): HTMLCanvasElement {
 
   const title = HERO_TITLE;
   const verse = HERO_VERSE;
-  const titleFont = `400 ${HT_TITLE_SIZE}px ${script}`;
-  const verseFont = `italic 400 ${HT_VERSE_SIZE}px ${serif}`;
+  const titleFont = `400 ${titleSize}px ${script}`;
+  const verseFont = `italic 400 ${verseSize}px ${serif}`;
 
   ctx.font = titleFont;
-  const titleInk = measureTrackedInk(ctx, title, HT_TITLE_TRACK);
+  const titleInk = measureTrackedInk(ctx, title, titleTrack);
   ctx.font = verseFont;
-  const verseInk = measureTrackedInk(ctx, verse, HT_VERSE_TRACK);
+  const verseInk = measureTrackedInk(ctx, verse, verseTrack);
 
-  // The halo is painted with a 26px blur, which spreads ink that far past every
-  // glyph edge in all four directions. It has to be part of the padding or the
-  // glow gets sliced off flat against the canvas border.
-  const pad = HT_PAD + HERO_SHADOW_BLUR;
+  // The halo blur spreads ink past every glyph edge in all four directions. It
+  // has to be part of the padding or the glow gets sliced off flat against the
+  // canvas border.
+  const pad = pad0 + shadowBlur;
 
   // Both runs are drawn from the same pen X, so the box spans the union of
   // their ink. `ink.left` is negative when a glyph overhangs to the left of the
@@ -554,8 +572,8 @@ function createHeroTextCanvas(): HTMLCanvasElement {
   // baseline too high and cut the tops off.
   const titleBaseline = pad + titleInk.ascent;
   // Clear the title's descenders (the "g" in Ignacio) before the rule.
-  const ruleY = titleBaseline + titleInk.descent + HT_RULE_GAP;
-  const verseBaseline = ruleY + HT_VERSE_GAP + verseInk.ascent;
+  const ruleY = titleBaseline + titleInk.descent + ruleGap;
+  const verseBaseline = ruleY + verseGap + verseInk.ascent;
 
   canvas.width = Math.ceil(inkRight - inkLeft + pad * 2);
   canvas.height = Math.ceil(verseBaseline + verseInk.descent + pad);
@@ -570,26 +588,26 @@ function createHeroTextCanvas(): HTMLCanvasElement {
   // separate from bright patches. Two passes because a single soft shadow is
   // too faint to separate the glyphs.
   ctx.shadowColor = "rgba(20,17,14,0.55)";
-  ctx.shadowBlur = HERO_SHADOW_BLUR;
+  ctx.shadowBlur = shadowBlur;
   ctx.fillStyle = "#ffffff";
   ctx.font = titleFont;
   for (let pass = 0; pass < 2; pass++) {
-    drawTracked(ctx, title, originX, titleBaseline, HT_TITLE_TRACK);
+    drawTracked(ctx, title, originX, titleBaseline, titleTrack);
   }
   ctx.font = verseFont;
   ctx.fillStyle = "#ffffff";
-  drawTracked(ctx, verse, originX, verseBaseline, HT_VERSE_TRACK);
+  drawTracked(ctx, verse, originX, verseBaseline, verseTrack);
 
   ctx.shadowBlur = 0;
   ctx.fillStyle = "#ffffff";
   ctx.font = titleFont;
-  drawTracked(ctx, title, originX, titleBaseline, HT_TITLE_TRACK);
+  drawTracked(ctx, title, originX, titleBaseline, titleTrack);
 
   ctx.fillStyle = GOLD;
-  ctx.fillRect(originX, ruleY, Math.min(96, inkRight - inkLeft), 2);
+  ctx.fillRect(originX, ruleY, Math.min(96 * scale, inkRight - inkLeft), Math.max(1, Math.round(2 * scale)));
 
   ctx.font = verseFont;
-  drawTracked(ctx, verse, originX, verseBaseline, HT_VERSE_TRACK);
+  drawTracked(ctx, verse, originX, verseBaseline, verseTrack);
 
   return canvas;
 }
@@ -1011,6 +1029,16 @@ export default function SpiralGallery() {
       const heroTextTexture = new THREE.CanvasTexture(heroTextCanvas);
       heroTextTexture.colorSpace = THREE.SRGBColorSpace;
       heroTextTexture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      // No mipmaps. A CanvasTexture defaults to LinearMipmapLinearFilter, so
+      // the moment the plane covers fewer screen pixels than the texture has
+      // texels the GPU samples a HALVED, pre-blurred mip level instead of the
+      // real bitmap — that is a genuine blur, and it hits phones hardest since
+      // the block is widest there. With the texture now rasterized at display
+      // size (see `heroTextScale`), plain LinearFilter samples the actual
+      // pixels 1:1.
+      heroTextTexture.generateMipmaps = false;
+      heroTextTexture.minFilter = THREE.LinearFilter;
+      heroTextTexture.magFilter = THREE.LinearFilter;
       textures.push(heroTextTexture);
 
       const heroTextGeometry = new THREE.PlaneGeometry(1, 1);
@@ -1036,6 +1064,15 @@ export default function SpiralGallery() {
       const heroTextMesh = new THREE.Mesh(heroTextGeometry, heroTextMaterial);
       heroTextMesh.renderOrder = 10;
       heroTextMesh.visible = false;
+      // Layer 1 = "not part of the post-processed scene". The composer runs
+      // with the camera on layer 0 only, so the title is skipped there and then
+      // drawn in a second, raw pass (see `animate`). That keeps the depth of
+      // field, the vignette and the film grain OFF the title: DoF composites
+      // through a half-resolution bokeh buffer, so even at zero circle of
+      // confusion the text came back through a downsample — soft edges, and
+      // worst on a phone where the block is largest. The spiral photos still
+      // get the full effect stack; only the title opts out.
+      heroTextMesh.layers.set(HERO_TEXT_LAYER);
       camera.add(heroTextMesh);
 
       // Geometry/placement are stored NORMALIZED to a camera distance of 1 and
@@ -1049,15 +1086,49 @@ export default function SpiralGallery() {
       let htUnitY = 0;
       let htVisibleH1 = 0;
 
+      // Scale the LAST rasterization was done at, so a resize only pays for a
+      // re-raster when the size actually moved meaningfully.
+      let heroTextScale = 1;
+      const heroTextBaseWidth = heroTextCanvas.width;
+
+      // Re-rasterize the texture at whatever size the plane now covers in
+      // device pixels. Anything else means the GPU resamples, and resampling
+      // text is what reads as blur.
+      function rasterizeHeroTextAtDisplaySize(widthFrac: number) {
+        // `widthFrac` of the frustum width == the same fraction of the
+        // viewport's CSS width; times the renderer's pixel ratio gives device
+        // pixels. Capped so a pathological ratio can't allocate a huge canvas.
+        const targetPx = Math.min(
+          4096,
+          Math.round(window.innerWidth * widthFrac * renderer!.getPixelRatio())
+        );
+        const next = targetPx / heroTextBaseWidth;
+        // 12% hysteresis: browser resize fires continuously, and rebuilding
+        // the canvas on every pixel of drag would be pure jank for a
+        // difference nobody can see.
+        if (Math.abs(next - heroTextScale) / heroTextScale < 0.12) return;
+
+        heroTextScale = next;
+        const redrawn = createHeroTextCanvas(next);
+        heroTextTexture.image = redrawn;
+        heroTextTexture.needsUpdate = true;
+        heroTextAspect = redrawn.width / redrawn.height;
+      }
+
       function layoutHeroText() {
         const aspect = window.innerWidth / window.innerHeight;
         // Visible extents at distance 1 from the camera.
         htVisibleH1 = 2 * Math.tan(THREE.MathUtils.degToRad(CAMERA_FOV) / 2);
         const visibleW1 = htVisibleH1 * aspect;
         // Narrow/portrait viewports need the block to take a larger share of
-        // the width or the tracked caps become unreadable; wide desktops need
-        // it to stay a discreet corner mark.
+        // the width or it becomes unreadable; wide desktops need it to stay a
+        // discreet corner mark.
         const widthFrac = THREE.MathUtils.clamp(0.44 / aspect, 0.24, 0.66);
+
+        // Before measuring the plane: this can change `heroTextAspect`, and the
+        // height below is derived from it.
+        rasterizeHeroTextAtDisplaySize(widthFrac);
+
         htUnitW = visibleW1 * widthFrac;
         htUnitH = htUnitW / heroTextAspect;
         const marginX = visibleW1 * 0.055;
