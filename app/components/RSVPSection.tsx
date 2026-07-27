@@ -1,7 +1,6 @@
 import Button from "./Button";
 import {
   BROWN_LIGHT,
-  CREAM_ALT,
   GOLD,
   TEXT,
   TEXT_SECONDARY,
@@ -54,8 +53,9 @@ function WhatsAppIcon() {
 export default function RSVPSection() {
   return (
     <section
-      className="relative w-full overflow-hidden py-20 sm:py-28"
-      style={{ backgroundColor: CREAM_ALT }}
+      // Opens on the Lino GiftsSection ends on and eases into Cloud Dancer —
+      // see the alternating chain in globals.css.
+      className="section-fade-to-cloud relative w-full overflow-hidden py-20 sm:py-28"
     >
       {/* .section-shell (globals.css) — shared desktop measure/gutter across
           every section below the 3D experience. */}

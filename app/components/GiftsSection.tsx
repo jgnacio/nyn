@@ -8,7 +8,7 @@ import { GOLD, TEXT_SECONDARY } from "./ClosingInvitation";
 // alternating tone without ever meeting at a hard horizontal line.
 export default function GiftsSection() {
   return (
-    <section className="gifts-bg relative w-full overflow-hidden py-20 text-center sm:py-28">
+    <section className="section-fade-to-lino relative w-full overflow-hidden py-20 text-center sm:py-28">
       {/* .section-shell (globals.css) — shared desktop measure/gutter across
           every section below the 3D experience. */}
       <div className="section-shell">

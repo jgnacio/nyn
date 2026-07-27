@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useEffect, useRef } from "react";
 import { GOLD } from "./ClosingInvitation";
 import {
   HERO_TITLE,
@@ -15,7 +14,6 @@ import {
   HT_VERSE_TRACK,
 } from "./hero-wordmark";
 import * as THREE from "three";
-import { CSS3DRenderer, CSS3DObject } from "three/examples/jsm/renderers/CSS3DRenderer.js";
 import {
   EffectComposer,
   RenderPass,
@@ -28,7 +26,6 @@ import {
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import Lenis from "lenis";
-import ClosingInvitation from "./ClosingInvitation";
 
 gsap.registerPlugin(ScrollTrigger);
 
@@ -86,57 +83,23 @@ const FILM_HOLE_SPACING = 2.6;
 // cropped by it.
 const FILM_BAND_HEIGHT = 0.8;
 
-// The closing invitation is authored, not photographed, so it has no natural
-// image dimensions to derive a width from — these aspect ratios are picked by
-// hand instead. It becomes the LAST slide in the same spiral sequence (see
-// `CLOSING_INDEX` below), sized/positioned through the exact same
-// helix/curvature math as every photo.
-//
-// Two ratios by orientation: on a wide (landscape) viewport the card is a
-// landscape rectangle; on a narrow (portrait) phone that same landscape card,
-// once expanded to cover the screen, becomes a short letterbox band with the
-// text crammed into it — unreadable. So portrait viewports get a PORTRAIT card
-// (taller than wide, ~2:3 like a real invitation) that fills a phone screen
-// naturally. Chosen once at init from the load-time orientation (see
-// `closingAspect` below).
-const CLOSING_CARD_ASPECT_LANDSCAPE = 1.5;
-const CLOSING_CARD_ASPECT_PORTRAIT = 0.66;
+// Extra scroll distance, in viewport-heights, held AFTER the ribbon has
+// reached its last photo and BEFORE the sticky canvas releases ClosingInvitation
+// (now a plain HTML section, see page.tsx) underneath it. The container grows
+// by this much extra height — keeping the sticky layer pinned, since it only
+// releases at the container's own bottom edge — while the ScrollTrigger `end`
+// stays at the un-extended distance, so `progressState` simply holds at
+// maxProgress for this stretch. That guarantees the tail fade below
+// (TAIL_FADE_STEPS) has fully completed before the handoff, even with
+// `scrub: 1`'s lag.
+const TAIL_DWELL_VH = 40;
 
-// CSS-pixel-per-world-unit scale used to size the closing card's real DOM
-// element before CSS3DObject scales it back down into world units (see
-// `CSS3DObject.scale.set` below) — arbitrary, only affects the DOM element's
-// internal pixel density/crispness, not its final on-screen size.
-const CSS3D_PX_PER_UNIT = 180;
-
-// The closing card is a real DOM element positioned in 3D space via
-// CSS3DRenderer, which has no fog/occlusion against the WebGL photos — a
-// nearer photo can't visually hide it the way it would a WebGL mesh. So it's
-// kept hidden until scroll is within this many "slide steps" of taking the
-// stage (i.e. nothing else should be centered in front of it by then anyway),
-// then revealed with a quick fade as it settles into place.
-const CLOSING_REVEAL_STEPS = 1.1;
-
-// The closing card's swing-in (via the normal helix/angleFor math, same as
-// every photo) completes EXPAND_STEPS early — at
-// (CLOSING_INDEX - EXPAND_STEPS) instead of riding all the way to
-// CLOSING_INDEX. The remaining EXPAND_STEPS of scroll, with the card already
-// parked dead-center, are spent scaling it up from its normal
-// near-fullscreen "photo" framing to a true edge-to-edge fullscreen fill —
-// same scroll-driven/reversible pattern as the intro hero pull-back, just
-// mirrored at the tail end instead of the head.
-const CLOSING_EXPAND_STEPS = 0.35;
-
-// Extra scroll distance, in viewport-heights, held AFTER the closing card
-// finishes expanding to fullscreen and BEFORE SaveTheDate is allowed to take
-// over. Previously there was none — the ScrollTrigger's `end` and the
-// container's height were the same point, so the sticky canvas released the
-// instant expandEased hit 1, no pause. This decouples them: the container
-// grows by this much extra height (keeping the sticky layers pinned, since
-// they only release at the container's own bottom edge), while the
-// ScrollTrigger `end` stays at the original (un-extended) distance so
-// `progressState` simply holds at maxProgress — card frozen fullscreen,
-// already white — for this stretch of scroll before the section releases.
-const CLOSING_DWELL_VH = 180;
+// Scroll "slide steps", measured back from the last photo, over which the
+// vignette and film grain ease to 0. The vignette darkens the canvas EDGES,
+// and the bottom edge is exactly where this canvas hands off to the flat HTML
+// below: left at full strength, the canvas ends on a vignette-DARKENED Lino
+// while the HTML starts on plain Lino, and the join reads as a hard seam.
+const TAIL_FADE_STEPS = 0.8;
 
 // Calibration constant only: the old fixed 72deg-per-image step (5 images
 // per revolution) is no longer used for angular *spacing* (spacing is now
@@ -271,21 +234,6 @@ function computeHeroFitZ(
 ): number {
   const tanHalfFov = Math.tan((fovDeg * Math.PI) / 180 / 2);
   return (heroWidth / (2 * tanHalfFov * viewportAspect)) * HERO_FIT_ZOOM_OUT;
-}
-
-// Inverse of `computeHeroFitZ`'s formula: the world-space WIDTH visible at a
-// given camera distance. Used for the closing card's tail-end expand — the
-// camera itself never moves there (it's already resting at
-// CAMERA_POSITION.z), so instead the card's own CSS3DObject scale is grown
-// until its rendered width equals this visible width, filling the viewport
-// edge-to-edge at the camera's current, unmoving distance.
-function computeVisibleWidthAtZ(
-  z: number,
-  viewportAspect: number,
-  fovDeg: number
-): number {
-  const tanHalfFov = Math.tan((fovDeg * Math.PI) / 180 / 2);
-  return 2 * z * tanHalfFov * viewportAspect;
 }
 
 // Builds a plane that is bent along the same circle `helixPoint` places
@@ -614,23 +562,17 @@ function createHeroTextCanvas(scale = 1): HTMLCanvasElement {
 
 export default function SpiralGallery() {
   const mountRef = useRef<HTMLDivElement>(null);
-  const cssMountRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  // The closing card's DOM node is created imperatively (it's wrapped by a
-  // CSS3DObject, not mounted by React directly) — this state only exists so
-  // its render below can portal the real <ClosingInvitation/> JSX into it
-  // once the effect has created it.
-  const [closingCardEl, setClosingCardEl] = useState<HTMLDivElement | null>(null);
-  // Whether the closing card was built in its portrait (mobile) proportion —
-  // drives the vertical layout variant of <ClosingInvitation/> below. Set
-  // once during scene init from the load-time viewport orientation.
-  const [closingPortrait, setClosingPortrait] = useState(false);
+  // Scroll affordance over the hero. Plain DOM rather than another canvas
+  // texture: it is short-lived UI copy, not part of the composition, and the
+  // browser renders small type far more crisply than a WebGL plane does.
+  const scrollHintRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const mount = mountRef.current;
-    const cssMount = cssMountRef.current;
     const container = containerRef.current;
-    if (!mount || !cssMount || !container) return;
+    const scrollHint = scrollHintRef.current;
+    if (!mount || !container) return;
 
     // Prevent the browser from restoring a stale scroll position on
     // reload/back-forward navigation — Lenis would then ease from 0 toward
@@ -650,15 +592,16 @@ export default function SpiralGallery() {
     let cancelled = false;
 
     let renderer: THREE.WebGLRenderer | null = null;
-    let cssRenderer: CSS3DRenderer | null = null;
     let composer: EffectComposer | null = null;
     let animationId = 0;
     let lenis: Lenis | null = null;
     let scrollTween: gsap.core.Tween | null = null;
-    let dwellTween: gsap.core.Tween | null = null;
     let heroTextTween: gsap.core.Tween | null = null;
     let tickerCallback: ((time: number) => void) | null = null;
     let onResize: (() => void) | null = null;
+    // Pauses the whole render loop while the spiral is off-screen (see the
+    // IntersectionObserver at the end of `init`).
+    let visibilityObserver: IntersectionObserver | null = null;
     const geometries: THREE.BufferGeometry[] = [];
     const materials: THREE.Material[] = [];
     const textures: THREE.Texture[] = [];
@@ -673,26 +616,13 @@ export default function SpiralGallery() {
       const aspects = dims.map((d) => d.width / d.height);
       const widths = aspects.map((aspect) => PLANE_HEIGHT * aspect);
 
-      // The closing invitation rides as one more slide at the end of the
-      // exact same ribbon — same angular-layout math, same helix, same
-      // curvature — instead of being a separate HTML element bolted on
-      // after the fact. `slideWidths`/`slideCount` extend the photo-only
-      // arrays by exactly one entry for it.
-      const CLOSING_INDEX = IMAGE_FILES.length;
-      // Orientation picked once, from the load-time viewport: a taller-than-
-      // wide viewport is a portrait phone, so the card gets the portrait
-      // aspect. Fixed for the session (a mid-experience device rotation keeps
-      // this aspect rather than rebuilding the whole ribbon layout) — the
-      // expand-to-cover below still fully fills whichever way the phone ends
-      // up, so a rotation degrades gracefully instead of breaking.
-      const closingPortrait = window.innerHeight > window.innerWidth;
-      setClosingPortrait(closingPortrait);
-      const closingAspect = closingPortrait
-        ? CLOSING_CARD_ASPECT_PORTRAIT
-        : CLOSING_CARD_ASPECT_LANDSCAPE;
-      const closingWidth = PLANE_HEIGHT * closingAspect;
-      const slideWidths = [...widths, closingWidth];
+      // The ribbon is photos and nothing else. The closing invitation used to
+      // ride here as one extra CSS3D slide; it is now a plain HTML section
+      // below the canvas (see page.tsx), which is why there is no slide/index
+      // bookkeeping for it anymore.
+      const slideWidths = widths;
       const slideCount = slideWidths.length;
+      const maxProgress = slideCount - 1;
       const slideAngularSpans = slideWidths.map((w) => w / RADIUS);
 
       // Camera Z at progress 0, sized so the flat hero fits the current
@@ -711,26 +641,6 @@ export default function SpiralGallery() {
         window.innerWidth / window.innerHeight,
         CAMERA_FOV
       );
-
-      // How much bigger than its normal footprint the closing card must scale
-      // to fully COVER the viewport at the camera's resting distance
-      // (restingCameraZ, which never moves during the expand — only the card's
-      // own scale changes). "Cover", not "fit-width": scale by whichever of
-      // width/height needs the larger factor, so the card never leaves a gap
-      // on either axis regardless of how the card aspect (portrait on mobile,
-      // landscape on desktop) relates to the viewport aspect. Mutable:
-      // recomputed on resize since it depends on viewport aspect ratio.
-      const computeClosingExpandScale = () => {
-        const aspect = window.innerWidth / window.innerHeight;
-        const visibleWidth = computeVisibleWidthAtZ(
-          restingCameraZ,
-          aspect,
-          CAMERA_FOV
-        );
-        const visibleHeight = visibleWidth / aspect;
-        return Math.max(visibleWidth / closingWidth, visibleHeight / PLANE_HEIGHT);
-      };
-      let closingExpandScale = computeClosingExpandScale();
 
       // Cumulative, edge-to-edge angular layout: each slide's center angle
       // theta_i = (sum of angularSpan_k for k < i) + angularSpan_i / 2.
@@ -771,20 +681,6 @@ export default function SpiralGallery() {
       // fog by default.
       scene.fog = new THREE.Fog(0xe4dfd4, 45, 115);
 
-      // Reusable endpoints for the background/fog color crossfade driven by
-      // the closing card's expand phase below — "Lino envejecido" (the
-      // spiral's resting color) to "Cloud Dancer" (the closing card's own
-      // CREAM background, and the color the very top of the next HTML
-      // section is primed to match). Mutated in place every frame via
-      // lerpColors, never reallocated.
-      const sceneBgCream = new THREE.Color(0xe4dfd4);
-      const sceneBgWhite = new THREE.Color(0xf1f0ec);
-
-      // Scratch color for the closing card's own background ramp during the
-      // dwell (see the `--closing-bg` block in updateSpiral). Allocated once
-      // here rather than per frame — this runs inside the rAF loop.
-      const cardBgColor = new THREE.Color();
-
       const camera = new THREE.PerspectiveCamera(
         CAMERA_FOV,
         window.innerWidth / window.innerHeight,
@@ -820,9 +716,7 @@ export default function SpiralGallery() {
       // Each photo starts at opacity 0 and is revealed the moment its own
       // texture is ready — no fade/reveal timeline. The camera pull-back
       // that frames the hero is driven purely by scroll (see the camera
-      // block in `updateSpiral`). Only the photos get a WebGL mesh here —
-      // the closing card (index CLOSING_INDEX) is set up separately below as
-      // a CSS3DObject, since it's real DOM content, not a texture.
+      // block in `updateSpiral`).
       for (let i = 0; i < IMAGE_FILES.length; i++) {
         // Final geometry built once, from real dimensions — no
         // placeholder-then-rebuild-on-texture-load, since dimensions are
@@ -933,41 +827,6 @@ export default function SpiralGallery() {
         });
       }
 
-      // --- The closing card: a REAL DOM element riding the same ribbon ---
-      // Instead of a WebGL texture standing in for it, the actual
-      // <ClosingInvitation/> markup (real, selectable text) is wrapped in a
-      // CSS3DObject and driven by the exact same helixPoint/angleFor math as
-      // every photo mesh above — same element throughout, from its swing
-      // into center stage to its final resting frame, no swap/crossfade to a
-      // separate section.
-      cssRenderer = new CSS3DRenderer();
-      cssRenderer.setSize(window.innerWidth, window.innerHeight);
-      cssRenderer.domElement.style.position = "absolute";
-      cssRenderer.domElement.style.top = "0";
-      cssRenderer.domElement.style.left = "0";
-      cssMount!.appendChild(cssRenderer.domElement);
-
-      const closingPxWidth = Math.round(closingWidth * CSS3D_PX_PER_UNIT);
-      const closingPxHeight = Math.round(PLANE_HEIGHT * CSS3D_PX_PER_UNIT);
-
-      const cardEl = document.createElement("div");
-      cardEl.style.width = `${closingPxWidth}px`;
-      cardEl.style.height = `${closingPxHeight}px`;
-      cardEl.style.opacity = "0";
-      cardEl.style.pointerEvents = "none";
-      cardEl.style.transition = "opacity 0.4s ease-out";
-      setClosingCardEl(cardEl);
-
-      const closingObject = new CSS3DObject(cardEl);
-      // Scales the element from CSS3D_PX_PER_UNIT-density pixels back down to
-      // world units, so it occupies exactly closingWidth x PLANE_HEIGHT —
-      // the same footprint a photo of that width would.
-      closingObject.scale.set(1 / CSS3D_PX_PER_UNIT, 1 / CSS3D_PX_PER_UNIT, 1);
-      const closingInitial = helixPoint(angleFor(CLOSING_INDEX, 0));
-      closingObject.position.set(closingInitial.x, closingInitial.y, closingInitial.z);
-      closingObject.rotation.y = closingInitial.rotationY;
-      group.add(closingObject);
-
       // Initial default. The real per-frame camera Z is scroll-driven inside
       // `updateSpiral`, and `updateSpiral(0)` runs below before the first
       // render, so the progress-0 distance (heroFitZ) is established
@@ -996,9 +855,9 @@ export default function SpiralGallery() {
       });
       dof.target = new THREE.Vector3(0, 0, 0);
 
-      // Base strengths held for the whole experience, then eased to 0 during
-      // the closing card's expand so the canvas→HTML handoff has no edge-darkened
-      // seam (see the lockstep lerp in updateSpiral's crossfade block).
+      // Base strengths held for the whole experience, then eased to 0 across
+      // the last TAIL_FADE_STEPS so the canvas→HTML handoff has no
+      // edge-darkened seam (see the tail fade block in updateSpiral).
       const VIGNETTE_DARKNESS = 0.35; // subtle — the cream palette should still read warm
       const NOISE_OPACITY = 0.06; // very subtle film grain to kill the "flat CGI" look
 
@@ -1158,7 +1017,10 @@ export default function SpiralGallery() {
       // paint can land on the fallback family, which measures differently.
       document.fonts?.ready.then(() => {
         if (cancelled) return;
-        const refreshed = createHeroTextCanvas();
+        // At the CURRENT display scale, not scale 1 — re-rasterizing at the
+        // base size here would undo the display-size fit and hand the GPU a
+        // mismatched bitmap to resample.
+        const refreshed = createHeroTextCanvas(heroTextScale);
         heroTextTexture.image = refreshed;
         heroTextTexture.needsUpdate = true;
         heroTextAspect = refreshed.width / refreshed.height;
@@ -1166,18 +1028,6 @@ export default function SpiralGallery() {
       });
 
       const progressState = { value: 0 };
-
-      // Dwell-phase progress (0..1), driven by a SECOND ScrollTrigger over the
-      // stretch AFTER the closing card is fully expanded — the extra scroll the
-      // sticky canvas holds before it releases SaveTheDate underneath. Only used
-      // on LANDSCAPE (desktop): there the canvas fades its own background from
-      // Cloud Dancer back to Lino across this stretch, so the whole
-      // Cloud-Dancer→Lino gradient plays out INSIDE the always-visible WebGL
-      // canvas instead of in the HTML section below it (which the sticky canvas
-      // covers on wide viewports, hiding the gradient and reading as a hard
-      // seam). Portrait/mobile leaves this at 0 and keeps the gradient in the
-      // HTML, where it already reads perfectly.
-      const dwellState = { value: 0 };
 
       // Re-place every image relative to the current scroll progress. No
       // billboarding/lookAt: rotation.y comes straight from the helix angle,
@@ -1268,122 +1118,24 @@ export default function SpiralGallery() {
           }
         }
 
-        // The closing card rides the same helix, computed from the SAME
-        // angleFor(index, p) as any photo — EXCEPT its swing-in is driven by
-        // p clamped to `closingArriveProgress` (CLOSING_INDEX - EXPAND_STEPS)
-        // instead of the raw scroll progress, so it finishes parked dead
-        // center a little EARLY. The remaining EXPAND_STEPS of scroll (p from
-        // closingArriveProgress to CLOSING_INDEX) are spent purely on the
-        // expand below — the angle/position stay frozen at their arrival
-        // values while only the scale grows. Revealed (opacity +
-        // pointer-events) only once close, since a CSS3D element has no
-        // fog/occlusion against the WebGL photos behind it.
-        const closingArriveProgress = CLOSING_INDEX - CLOSING_EXPAND_STEPS;
-        const closingAngle = angleFor(CLOSING_INDEX, Math.min(p, closingArriveProgress));
-        const closingPoint = helixPoint(closingAngle);
-
-        const revealT = THREE.MathUtils.clamp(
-          (p - (closingArriveProgress - CLOSING_REVEAL_STEPS)) / CLOSING_REVEAL_STEPS,
+        // Tail fade of the screen-space vignette (and film grain) across the
+        // last TAIL_FADE_STEPS of scroll. The canvas background is a constant
+        // Lino (--background-alt) and every HTML section below it now opens on
+        // that same Lino, so the ONLY thing that could break the handoff is the
+        // vignette darkening the canvas's bottom edge. Easing it to 0 means the
+        // canvas releases as a UNIFORM #e4dfd4 that matches the HTML exactly.
+        // The full-strength vignette is untouched for the rest of the ride.
+        const tailT = THREE.MathUtils.clamp(
+          (p - (maxProgress - TAIL_FADE_STEPS)) / TAIL_FADE_STEPS,
           0,
           1
         );
-        cardEl.style.opacity = String(revealT);
-        cardEl.style.pointerEvents = revealT > 0.05 ? "auto" : "none";
-
-        // Expand phase: once the card has arrived dead-center, grow it from
-        // its normal PLANE_HEIGHT-sized footprint up to `closingExpandScale`
-        // — filling the viewport edge-to-edge — over the final
-        // CLOSING_EXPAND_STEPS of scroll. Ease-out to land softly at the
-        // fullscreen size right as scroll hits the bottom of the page.
-        const expandT = THREE.MathUtils.clamp(
-          (p - closingArriveProgress) / CLOSING_EXPAND_STEPS,
-          0,
-          1
-        );
-        const expandEased = 1 - Math.pow(1 - expandT, 3);
-        const closingScale =
-          THREE.MathUtils.lerp(1, closingExpandScale, expandEased) / CSS3D_PX_PER_UNIT;
-        closingObject.scale.set(closingScale, closingScale, 1 / CSS3D_PX_PER_UNIT);
-
-        // The card "arrives" near-center but not perfectly on-axis (position
-        // x/z close to but not exactly 0, rotation.y close to but not
-        // exactly 0 — see the comment above). That residual offset/tilt is
-        // barely visible at the card's normal PLANE_HEIGHT size, but the
-        // expand phase blows it up to fullscreen, turning it into an obvious
-        // keystoned/rotated slab. So position and rotation ALSO ease toward
-        // dead-center-and-flat (0,0,0 / rotation 0) in lockstep with the
-        // scale-up, landing perfectly screen-aligned — facing the static
-        // camera, which looks straight down -z at the origin — exactly when
-        // it finishes covering the viewport.
-        closingObject.position.set(
-          THREE.MathUtils.lerp(closingPoint.x, 0, expandEased),
-          THREE.MathUtils.lerp(closingPoint.y, 0, expandEased),
-          THREE.MathUtils.lerp(closingPoint.z, 0, expandEased)
-        );
-        closingObject.rotation.y = THREE.MathUtils.lerp(
-          closingPoint.rotationY,
-          0,
-          expandEased
-        );
-
-        // Crossfade the canvas background/fog from cream to white in lockstep
-        // with the same expand easing, so by the time the card finishes
-        // covering the viewport (expandEased=1, which lands exactly at the
-        // bottom of the scroll container) the WebGL canvas is already the
-        // same white as the card's own background and the HTML section right
-        // below it — no color seam, no hard cut, just a soft dissolve.
-        (scene.background as THREE.Color).lerpColors(
-          sceneBgCream,
-          sceneBgWhite,
-          expandEased
-        );
-        (scene.fog as THREE.Fog).color.lerpColors(
-          sceneBgCream,
-          sceneBgWhite,
-          expandEased
-        );
-
-        // LANDSCAPE ONLY — second crossfade: once the card is fullscreen and
-        // the background has reached Cloud Dancer above, ease it BACK toward
-        // Lino (--background-alt) across the dwell. This plays the
-        // Cloud-Dancer→Lino handoff gradient inside the always-visible canvas
-        // (the sticky canvas covers the HTML gradient on wide desktop
-        // viewports), so by the time the canvas releases, it already sits on
-        // Lino — the exact solid color SaveTheDate starts on in landscape (see
-        // .save-the-date-bg in globals.css) — and the join is seamless. Portrait
-        // keeps dwellState at 0, so this is a no-op and the HTML gradient stays.
-        if (!closingPortrait) {
-          (scene.background as THREE.Color).lerp(sceneBgCream, dwellState.value);
-          (scene.fog as THREE.Fog).color.lerp(sceneBgCream, dwellState.value);
-
-          // The card is expanded to COVER the viewport by this point, so the
-          // canvas fade above happens entirely behind it and would never be
-          // seen. Drive the card's own background through the identical
-          // Cloud Dancer -> Lino ramp (via the `--closing-bg` custom property
-          // ClosingInvitation reads) so the surface actually on screen is the
-          // one that lands on Lino — the exact color SaveTheDate starts on in
-          // landscape. Without this the handoff is a hard horizontal line.
-          cardBgColor.lerpColors(sceneBgWhite, sceneBgCream, dwellState.value);
-          cardEl.style.setProperty("--closing-bg", `#${cardBgColor.getHexString()}`);
-        }
-
-        // Fade the screen-space vignette (and film grain) out in lockstep with
-        // the same expand easing. The vignette darkens the canvas EDGES — and
-        // the bottom edge is exactly where this WebGL canvas hands off to the
-        // flat HTML section below (SaveTheDate). Left at full strength, the
-        // canvas ends on a vignette-DARKENED cream while the HTML starts on the
-        // plain cream they were both primed to, so the two never match and a
-        // hard color seam appears at the join (most visible on wide desktop
-        // viewports, where the bottom edge sits deep in the vignette falloff).
-        // Easing darkness → 0 as the closing card expands means that by the
-        // time of the handoff the canvas is a UNIFORM #f1f0ec with no edge
-        // darkening, matching the HTML exactly — no seam. The full-strength
-        // vignette is untouched for the entire experience before this expand.
-        vignette.darkness = THREE.MathUtils.lerp(VIGNETTE_DARKNESS, 0, expandEased);
+        const tailEased = 1 - Math.pow(1 - tailT, 3);
+        vignette.darkness = THREE.MathUtils.lerp(VIGNETTE_DARKNESS, 0, tailEased);
         noise.blendMode.opacity.value = THREE.MathUtils.lerp(
           NOISE_OPACITY,
           0,
-          expandEased
+          tailEased
         );
 
         // Scroll-driven camera pull-back. At p=0 the camera sits at heroFitZ
@@ -1401,19 +1153,7 @@ export default function SpiralGallery() {
         const camT = THREE.MathUtils.clamp(p / CAMERA_PULLBACK_STEPS, 0, 1);
         const camEased = 1 - Math.pow(1 - camT, 3);
         camera.position.x = CAMERA_POSITION.x;
-        // The spiral framing keeps the camera at CAMERA_POSITION.y (0.8), i.e.
-        // ABOVE the origin looking slightly DOWN — a nice tilt for the helix,
-        // but it keystones any vertical plane sitting at the origin. The
-        // closing card ends up exactly there (position eased to 0,0,0, facing
-        // +z), so with the tilt still on it renders as a slab "leaning
-        // forward" toward the viewer instead of dead-flat. So during the same
-        // expand window that flattens the card, ease the camera's y back to 0
-        // — by the time the card is fullscreen the camera looks straight down
-        // -z at the origin and the card is perfectly screen-aligned (no
-        // keystone), which is the framing the card's own flatten-to-(0,0,0)
-        // was always assuming.
-        const camYBase = THREE.MathUtils.lerp(0, CAMERA_POSITION.y, camEased);
-        camera.position.y = THREE.MathUtils.lerp(camYBase, 0, expandEased);
+        camera.position.y = THREE.MathUtils.lerp(0, CAMERA_POSITION.y, camEased);
         camera.position.z = THREE.MathUtils.lerp(
           heroFitZ,
           restingCameraZ,
@@ -1467,6 +1207,14 @@ export default function SpiralGallery() {
 
         heroTextMaterial.opacity = heroTextIntro.value * (1 - htEased);
         heroTextMesh.visible = heroTextMaterial.opacity > 0.002;
+
+        // The scroll hint rides the EXACT same intro-in / scroll-out ramp as
+        // the title, so the two leave together as one layer instead of the
+        // hint lingering over an already-assembling spiral. Fully reversible:
+        // scroll back to the top and the invitation to scroll comes back.
+        if (scrollHint) {
+          scrollHint.style.opacity = String(heroTextMaterial.opacity);
+        }
       }
 
       updateSpiral(0);
@@ -1482,20 +1230,17 @@ export default function SpiralGallery() {
       gsap.ticker.add(tickerCallback);
       gsap.ticker.lagSmoothing(0);
 
-      const maxProgress = slideCount - 1;
-
       scrollTween = gsap.to(progressState, {
         value: maxProgress,
         ease: "none",
         scrollTrigger: {
           trigger: container,
           start: "top top",
-          // Deliberately NOT "bottom bottom": the container is now taller
-          // than this by CLOSING_DWELL_VH (see that constant) so the sticky
-          // canvas keeps holding its fully-expanded, already-white closing
-          // card for that extra stretch of scroll — progress simply can't
-          // exceed maxProgress once this trigger range is consumed — before
-          // SaveTheDate is released underneath.
+          // Deliberately NOT "bottom bottom": the container is taller than
+          // this by TAIL_DWELL_VH (see that constant) so the sticky canvas
+          // keeps holding the last photo — progress simply can't exceed
+          // maxProgress once this trigger range is consumed — for that extra
+          // stretch of scroll before the HTML below is released.
           //
           // Measured as a FRACTION of the container's own real rendered
           // height (getBoundingClientRect), not `window.innerHeight` — on
@@ -1509,8 +1254,8 @@ export default function SpiralGallery() {
           // denominator are in the same vh units. `end` as a function so it
           // recomputes on resize/refresh instead of baking in a stale value.
           end: () => {
-            const totalVh = (IMAGE_FILES.length + 1) * 100 + CLOSING_DWELL_VH;
-            const coreVh = (IMAGE_FILES.length + 1) * 100;
+            const totalVh = IMAGE_FILES.length * 100 + TAIL_DWELL_VH;
+            const coreVh = IMAGE_FILES.length * 100;
             return `+=${container!.getBoundingClientRect().height * (coreVh / totalVh)}`;
           },
           scrub: 1,
@@ -1519,70 +1264,90 @@ export default function SpiralGallery() {
           // transitions) — but that smoothing has real inertia: a fast
           // scroll/trackpad flick can carry the actual scroll position past
           // `end` (into the dwell) before progressState.value finishes
-          // catching up to maxProgress, so the closing card gets caught
-          // mid-`expand` — position/rotation not yet eased to flat — right
-          // as SaveTheDate starts peeking in underneath (its release is
-          // driven by raw scroll, not by this lagging tween). Snapping the
-          // value the instant we cross `end` guarantees the card is already
-          // flat/fullscreen for the entire dwell, no matter how fast the
-          // user scrolled through it.
+          // catching up to maxProgress, so the tail fade above would still be
+          // mid-flight right as the HTML below starts peeking in (its release
+          // is driven by raw scroll, not by this lagging tween). Snapping the
+          // value the instant we cross `end` guarantees the fade is already
+          // complete for the entire dwell, no matter how fast the user
+          // scrolled through it.
           onLeave: () => {
             progressState.value = maxProgress;
           },
         },
       });
 
-      // Second trigger: drives dwellState 0→1 across the dwell stretch, from
-      // where the first trigger ENDS (card fully expanded, coreVh into the
-      // container) to shortly before the sticky canvas releases. The sticky is
-      // window.innerHeight tall, so it detaches when scroll reaches
-      // (containerHeight - viewportHeight); we finish the fade a touch earlier
-      // via DWELL_FADE_MARGIN_VH so the canvas is already fully on Lino before
-      // SaveTheDate slides up underneath. Same getBoundingClientRect-fraction
-      // measuring as the first trigger, for the same mobile-vh robustness, and
-      // `start`/`end` as functions so they recompute on resize.
-      const DWELL_FADE_MARGIN_VH = 15; // finish this much scroll before release
-      dwellTween = gsap.to(dwellState, {
-        value: 1,
-        ease: "none",
-        scrollTrigger: {
-          trigger: container,
-          start: () => {
-            const totalVh = (IMAGE_FILES.length + 1) * 100 + CLOSING_DWELL_VH;
-            const coreVh = (IMAGE_FILES.length + 1) * 100;
-            const h = container!.getBoundingClientRect().height;
-            return `top+=${h * (coreVh / totalVh)} top`;
-          },
-          end: () => {
-            const totalVh = (IMAGE_FILES.length + 1) * 100 + CLOSING_DWELL_VH;
-            const h = container!.getBoundingClientRect().height;
-            // Release point (container bottom minus one viewport), pulled in by
-            // the safety margin, expressed as a fraction of container height.
-            const releaseVh = totalVh - 100 - DWELL_FADE_MARGIN_VH;
-            return `top+=${h * (releaseVh / totalVh)} top`;
-          },
-          scrub: 1,
-        },
-      });
-
       function animate() {
         updateSpiral(progressState.value);
+
+        // Pass 1 — the spiral, through the full effect stack. The camera is on
+        // layer 0 here, so the hero title (layer 1) is skipped entirely.
         composer!.render();
-        // Separate render pass for the CSS3D layer (the closing card) —
-        // CSS3DRenderer walks the same `scene`/`group` graph but only acts
-        // on CSS3DObject entries, ignoring the WebGL meshes.
-        cssRenderer!.render(scene, camera);
+
+        // Pass 2 — the hero title, raw. Straight to the framebuffer with no
+        // depth of field, no vignette, no grain and no intermediate
+        // half-resolution buffer, which is what keeps the type crisp. Depth is
+        // cleared first (and the material has depthTest off) so it always sits
+        // on top; `autoClear` is off so this composites over pass 1 instead of
+        // wiping it.
+        if (heroTextMesh.visible) {
+          const prevAutoClear = renderer!.autoClear;
+          const prevBackground = scene.background;
+          renderer!.autoClear = false;
+          // `autoClear = false` is NOT enough on its own. When a scene carries a
+          // `background` Color, three.js's WebGLBackground sets `forceClear` and
+          // clears the color buffer at the start of EVERY render(), regardless of
+          // autoClear — so this pass wiped the spiral the composer had just drawn
+          // and left a bare background with only the title on it. Detaching the
+          // background for the duration of the pass is what makes this a true
+          // overlay: nothing to force, nothing cleared, pass 1 survives.
+          scene.background = null;
+          // The composer leaves its own target bound in some pass orders;
+          // pin the default framebuffer explicitly so this lands on screen.
+          renderer!.setRenderTarget(null);
+          camera.layers.set(HERO_TEXT_LAYER);
+          renderer!.clearDepth();
+          renderer!.render(scene, camera);
+          camera.layers.set(0);
+          scene.background = prevBackground;
+          renderer!.autoClear = prevAutoClear;
+        }
 
         animationId = requestAnimationFrame(animate);
       }
       animationId = requestAnimationFrame(animate);
+
+      // --- Off-screen pause -------------------------------------------------
+      // This loop is the expensive part of the page: every frame it rebuilds
+      // the vertex positions of 16 photos plus their two sprocket bands each,
+      // then runs a full depth-of-field + vignette + grain composite and a
+      // second raw pass for the title. Once the spiral has scrolled away, all
+      // of that is being computed for pixels nobody can see, while the
+      // sections below (gallery, RSVP, countdown) fight it for the same frame
+      // budget. So the rAF loop is suspended whenever the scroll container
+      // leaves the viewport and resumed when it comes back — the scene, its
+      // textures and the ScrollTrigger/Lenis wiring all stay alive, so
+      // resuming is a single frame with no rebuild and no visible seam.
+      // `rootMargin` restarts it slightly before it is actually on screen, so
+      // the first visible frame is already the correct one.
+      visibilityObserver = new IntersectionObserver(
+        (entries) => {
+          const isVisible = entries[entries.length - 1].isIntersecting;
+          if (isVisible && animationId === 0) {
+            animationId = requestAnimationFrame(animate);
+          } else if (!isVisible && animationId !== 0) {
+            cancelAnimationFrame(animationId);
+            animationId = 0;
+          }
+        },
+        { rootMargin: "200px 0px" }
+      );
+      visibilityObserver.observe(container!);
 
       onResize = () => {
         camera.aspect = window.innerWidth / window.innerHeight;
         camera.updateProjectionMatrix();
         renderer!.setSize(window.innerWidth, window.innerHeight);
         composer!.setSize(window.innerWidth, window.innerHeight);
-        cssRenderer!.setSize(window.innerWidth, window.innerHeight);
         // heroFitZ depends on viewport aspect — recompute so the hero keeps
         // fitting the viewport after a resize/rotation.
         heroFitZ = computeHeroFitZ(
@@ -1595,7 +1360,9 @@ export default function SpiralGallery() {
           window.innerWidth / window.innerHeight,
           CAMERA_FOV
         );
-        closingExpandScale = computeClosingExpandScale();
+        // Re-fits the title's corner AND re-rasterizes its texture if the new
+        // viewport changed how many device pixels it covers.
+        layoutHeroText();
       };
       window.addEventListener("resize", onResize);
 
@@ -1605,10 +1372,10 @@ export default function SpiralGallery() {
       // renderer/ticker/ScrollTrigger dangling.
       if (cancelled) {
         cancelAnimationFrame(animationId);
+        visibilityObserver.disconnect();
         window.removeEventListener("resize", onResize);
         gsap.ticker.remove(tickerCallback);
         scrollTween.kill();
-        dwellTween?.kill();
         heroTextTween?.kill();
         ScrollTrigger.getAll().forEach((st) => st.kill());
         lenis.destroy();
@@ -1620,9 +1387,6 @@ export default function SpiralGallery() {
         if (renderer.domElement.parentElement === mount) {
           mount!.removeChild(renderer.domElement);
         }
-        if (cssRenderer && cssRenderer.domElement.parentElement === cssMount) {
-          cssMount!.removeChild(cssRenderer.domElement);
-        }
       }
     }
 
@@ -1631,10 +1395,10 @@ export default function SpiralGallery() {
     return () => {
       cancelled = true;
       cancelAnimationFrame(animationId);
+      if (visibilityObserver) visibilityObserver.disconnect();
       if (onResize) window.removeEventListener("resize", onResize);
       if (tickerCallback) gsap.ticker.remove(tickerCallback);
       if (scrollTween) scrollTween.kill();
-      if (dwellTween) dwellTween.kill();
       if (heroTextTween) heroTextTween.kill();
       ScrollTrigger.getAll().forEach((st) => st.kill());
       if (lenis) lenis.destroy();
@@ -1649,9 +1413,6 @@ export default function SpiralGallery() {
           mount.removeChild(renderer.domElement);
         }
       }
-      if (cssRenderer && cssRenderer.domElement.parentElement === cssMount) {
-        cssMount.removeChild(cssRenderer.domElement);
-      }
     };
   }, []);
 
@@ -1660,17 +1421,16 @@ export default function SpiralGallery() {
       ref={containerRef}
       style={{
         position: "relative",
-        height: `${(IMAGE_FILES.length + 1) * 100 + CLOSING_DWELL_VH}vh`,
+        height: `${IMAGE_FILES.length * 100 + TAIL_DWELL_VH}vh`,
       }}
     >
       {/* `sticky`, not `fixed`: fixed pins to the viewport for the entire
           page, so once the scroll passes this container's own height the
           canvas would stay glued on top of every section that comes after
-          it (SaveTheDate included), blocking it forever. Sticky only pins
-          while its parent (`containerRef`, height (N+1)*100vh) is in view —
-          it releases naturally the moment scroll passes the container's
-          bottom edge, exactly like the hand-off the closing card's white
-          crossfade is built for. */}
+          it (ClosingInvitation included), blocking it forever. Sticky only
+          pins while its parent (`containerRef`) is in view — it releases
+          naturally the moment scroll passes the container's bottom edge,
+          which is the hand-off the tail vignette fade is built for. */}
       <div
         ref={mountRef}
         style={{
@@ -1689,32 +1449,66 @@ export default function SpiralGallery() {
           background: "#e4dfd4",
         }}
       />
-      {/* CSS3D layer for the closing card — painted above the WebGL canvas
-          (later in DOM order, same sticky positioning so it releases in
-          lockstep with the canvas above) since it only becomes visible
-          right at the end, when nothing else should be in front of it
-          anyway. pointerEvents:none by default so it never blocks
-          scroll/clicks; the card itself re-enables pointer-events once
-          revealed (see `cardEl.style.pointerEvents` in the effect above). */}
+
+      {/* Scroll affordance, layered over the canvas the same way the closing
+          card's CSS3D layer used to be: a second sticky box pulled back up by
+          one viewport so it occupies the same band, with pointer events off so
+          it never eats a scroll or a tap. Opacity is driven per-frame from
+          updateSpiral (not a CSS transition), so it tracks scroll position
+          rather than firing once. */}
       <div
-        ref={cssMountRef}
+        ref={scrollHintRef}
         style={{
           position: "sticky",
           top: 0,
           left: 0,
-          // `100%` for the same reason as the WebGL layer above.
           width: "100%",
           height: "100vh",
           marginTop: "-100vh",
           pointerEvents: "none",
           zIndex: 1,
+          display: "flex",
+          alignItems: "flex-end",
+          justifyContent: "center",
+          opacity: 0,
         }}
-      />
-      {closingCardEl &&
-        createPortal(
-          <ClosingInvitation portrait={closingPortrait} />,
-          closingCardEl
-        )}
+      >
+        <div
+          className="scroll-hint flex flex-col items-center gap-2"
+          style={{ paddingBottom: "clamp(1.75rem, 6vh, 3.5rem)" }}
+        >
+          <span
+            className="font-[family-name:var(--font-cormorant)] italic"
+            style={{
+              color: "#ffffff",
+              fontSize: "clamp(0.9rem, 1.8vw, 1.1rem)",
+              letterSpacing: "0.14em",
+              // The hero photo behind this is a bright outdoor scene whose
+              // luminance changes across the frame, so white type alone is not
+              // reliably legible. Same soft drop shadow the in-canvas title
+              // carries, for one consistent treatment.
+              textShadow: "0 2px 12px rgba(0,0,0,0.45)",
+            }}
+          >
+            Deslizá para ver más
+          </span>
+          <svg
+            width="22"
+            height="22"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="#ffffff"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+            style={{ filter: "drop-shadow(0 2px 8px rgba(0,0,0,0.45))" }}
+          >
+            <path d="M12 5v14" />
+            <path d="m19 12-7 7-7-7" />
+          </svg>
+        </div>
+      </div>
     </div>
   );
 }

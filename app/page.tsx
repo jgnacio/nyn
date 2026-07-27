@@ -1,3 +1,4 @@
+import ClosingInvitation from "./components/ClosingInvitation";
 import Countdown from "./components/Countdown";
 import Footer from "./components/Footer";
 import GallerySection from "./components/GallerySection";
@@ -17,6 +18,10 @@ export default function Home() {
           canvas's sticky positioning below. */}
       <SplashScreen />
       <SpiralGallery />
+      {/* Was the last "slide" of the 3D spiral (a CSS3DObject that expanded to
+          cover the viewport). It is now a plain section in the document flow:
+          the canvas hands off to it on the same Lino background, no animation. */}
+      <ClosingInvitation />
       <SaveTheDate />
       <GallerySection />
       <UploadPhotos />

@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import {
   BROWN_LIGHT,
   BLUE,
-  CREAM_ALT,
   GOLD,
   TEXT_SECONDARY,
 } from "./ClosingInvitation";
@@ -66,8 +65,9 @@ export default function Countdown() {
 
   return (
     <section
-      className="relative w-full overflow-hidden py-16 text-center sm:py-20"
-      style={{ backgroundColor: CREAM_ALT }}
+      // Opens on the Cloud Dancer RSVPSection ends on and eases back to Lino,
+      // the color the Footer's photo overlay fades from — see globals.css.
+      className="section-fade-to-lino relative w-full overflow-hidden py-16 text-center sm:py-20"
     >
       {/* .section-shell (globals.css) — shared desktop measure/gutter across
           every section below the 3D experience. */}

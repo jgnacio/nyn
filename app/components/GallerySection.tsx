@@ -92,8 +92,9 @@ export const GALLERY_MEDIA: GalleryMedia[] = [
 export default function GallerySection() {
   return (
     <section
-      className="relative w-full py-20 sm:py-28 overflow-hidden text-center"
-      style={{ backgroundColor: CREAM_ALT }}
+      // Opens on the Cloud Dancer SaveTheDate ends on and eases back to Lino —
+      // see the alternating chain in globals.css.
+      className="section-fade-to-lino relative w-full py-20 sm:py-28 overflow-hidden text-center"
     >
       {/* Heading only — the gallery strip below stays full-bleed on purpose.
           .section-shell (globals.css) keeps this copy on the same desktop

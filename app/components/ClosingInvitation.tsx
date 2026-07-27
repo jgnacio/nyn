@@ -86,95 +86,87 @@ export function CornerSprig({ className }: { className?: string }) {
   );
 }
 
-// Sized entirely by its PARENT container (w-full h-full) rather than the
-// viewport (no min-h-screen): this same component is mounted, unchanged,
-// inside SpiralGallery's CSS3DObject card — a fixed-pixel DOM box positioned
-// in 3D space alongside the photos — so it must fill whatever box it's
-// dropped into instead of assuming it owns the whole page.
-// `containerType: inline-size` turns this element into a container-query
-// context, so the `cqw`/`cqh` units below are measured against ITS OWN
-// rendered box (the fixed-pixel cardEl set up in SpiralGallery), not the
-// real browser viewport. That matters because the card's intrinsic pixel
-// density (SpiralGallery's CSS3D_PX_PER_UNIT) can change independently of
-// how big the card ends up looking on screen — `vw` doesn't know about that
-// and drifts out of proportion whenever the density knob is retuned, while
-// `cqw` stays correct by construction since it scales with the same box.
-// `portrait` only reshapes the frame's padding/measure for the tall mobile
-// card — the TEXT SIZES stay identical to the (approved) landscape values in
-// both orientations, deliberately not scaled up for portrait.
-export default function ClosingInvitation({
-  portrait = false,
-}: {
-  portrait?: boolean;
-}) {
-  const textMaxWidth = portrait ? "84%" : "62%";
-  const framePadding = portrait ? "px-[9%] py-[12%]" : "px-[6%] py-[8%]";
-
+// A plain, static HTML section — no canvas, no CSS3D, no scroll-driven
+// animation. This used to be mounted inside SpiralGallery's CSS3DObject: a
+// fixed-pixel DOM box positioned in 3D space that expanded to cover the
+// viewport at the end of the spiral. That coupling made the card's box depend
+// on the 3D camera rather than on the document, which fought the page layout
+// (and forced the whole closing dwell/expand machinery in SpiralGallery), so
+// it now sits in the normal document flow right after the canvas — see
+// page.tsx.
+//
+// It opens on Lino (--background-alt), the exact color the canvas above
+// releases on, and the invitation itself is a Cloud Dancer card floating on
+// it — so the canvas→HTML handoff is a continuous surface, no seam.
+// Sizes are viewport-relative (`vw` clamps) like every other section below the
+// 3D experience, not the container-query units the fixed-pixel 3D card needed.
+export default function ClosingInvitation() {
   return (
-    <div
-      className={`relative w-full h-full flex items-center justify-center overflow-hidden ${framePadding}`}
-      // `--closing-bg` is driven per-frame by SpiralGallery during the closing
-      // dwell (landscape only) so this card rides the SAME Cloud Dancer -> Lino
-      // handoff the canvas behind it performs. With a fixed CREAM here the card
-      // stayed Cloud Dancer while the canvas faded to Lino underneath it —
-      // and since the expanded card COVERS the canvas, the fade was invisible
-      // and the join to SaveTheDate read as a hard horizontal line.
-      // The fallback keeps this correct on its own in portrait, where
-      // SpiralGallery leaves the property unset on purpose.
-      style={{
-        backgroundColor: `var(--closing-bg, ${CREAM})`,
-        containerType: "inline-size",
-      }}
+    <section
+      className="relative w-full overflow-hidden py-16 sm:py-24"
+      style={{ backgroundColor: CREAM_ALT }}
     >
-      <CornerSprig className="pointer-events-none absolute top-0 left-0 w-[18%] h-[18%]" />
-      <CornerSprig className="pointer-events-none absolute top-0 right-0 w-[18%] h-[18%] -scale-x-100" />
-      <CornerSprig className="pointer-events-none absolute bottom-0 left-0 w-[18%] h-[18%] -scale-y-100" />
-      <CornerSprig className="pointer-events-none absolute bottom-0 right-0 w-[18%] h-[18%] -scale-x-100 -scale-y-100" />
-
-      <div
-        className="pointer-events-none absolute inset-[6%] border"
-        style={{ borderColor: `${GOLD}55`, borderWidth: "1.5px" }}
-      />
-      <div
-        className="pointer-events-none absolute inset-[7.4%] border"
-        style={{ borderColor: `${GOLD}33`, borderWidth: "0.75px" }}
-      />
-
-      <div className="relative text-center" style={{ maxWidth: textMaxWidth }}>
-        <p
-          className="font-[family-name:var(--font-cormorant)] italic tracking-wide"
-          style={{
-            color: TEXT,
-            fontSize: "clamp(1.5rem, 4.4cqw, 2.9rem)",
-            lineHeight: 1.35,
-          }}
+      <div className="section-shell">
+        <div
+          className="relative mx-auto max-w-3xl px-[13%] py-[16%] sm:px-[11%] sm:py-[11%]"
+          style={{ backgroundColor: CREAM }}
         >
-          Con mucha alegría y con un corazón agradecido a Dios por todo lo que
-          hemos vivido, queremos compartir contigo uno de los momentos más
-          importantes de nuestras vidas.
-          <br />
-          <br />
-          Él nos permitió crecer como amigos, caminar juntos como novios y hoy
-          nos regala la bendición de comenzar una nueva etapa.
-          <br />
-          <br />
-          Tu presencia hará que este día sea aún más especial, y nos llenaría
-          de felicidad que nos acompañes a celebrar el amor que Dios ha
-          escrito para nosotros.
-        </p>
+          {/* Sized off the card's WIDTH and kept narrower than its horizontal
+              padding, so the sprigs stay in the corners instead of sweeping
+              into the text. In the 3D card they were a percentage of a fixed,
+              near-square box; this section is tall and text-driven, so the
+              same 18% reached well past the measure. */}
+          <CornerSprig className="pointer-events-none absolute top-0 left-0 w-[9%] max-w-[72px] h-auto" />
+          <CornerSprig className="pointer-events-none absolute top-0 right-0 w-[9%] max-w-[72px] h-auto -scale-x-100" />
+          <CornerSprig className="pointer-events-none absolute bottom-0 left-0 w-[9%] max-w-[72px] h-auto -scale-y-100" />
+          <CornerSprig className="pointer-events-none absolute bottom-0 right-0 w-[9%] max-w-[72px] h-auto -scale-x-100 -scale-y-100" />
 
-        <Flourish
-          className="mx-auto mt-[7%]"
-          style={{ width: "min(60cqw, 220px)", height: "auto" }}
-        />
+          <div
+            className="pointer-events-none absolute inset-[6%] border"
+            style={{ borderColor: `${GOLD}55`, borderWidth: "1.5px" }}
+          />
+          <div
+            className="pointer-events-none absolute inset-[7.4%] border"
+            style={{ borderColor: `${GOLD}33`, borderWidth: "0.75px" }}
+          />
 
-        <p
-          className="font-[family-name:var(--font-parisienne)] mt-[5%]"
-          style={{ color: GOLD, fontSize: "clamp(3.5rem, 10cqw, 7rem)" }}
-        >
-          ¡Nos casamos!
-        </p>
+          <div className="relative text-center">
+            <p
+              className="font-[family-name:var(--font-cormorant)] italic tracking-wide"
+              style={{
+                color: TEXT,
+                fontSize: "clamp(1.1rem, 2.4vw, 1.6rem)",
+                lineHeight: 1.5,
+              }}
+            >
+              Con mucha alegría y con un corazón agradecido a Dios por todo lo
+              que hemos vivido, queremos compartir contigo uno de los momentos
+              más importantes de nuestras vidas.
+              <br />
+              <br />
+              Él nos permitió crecer como amigos, caminar juntos como novios y
+              hoy nos regala la bendición de comenzar una nueva etapa.
+              <br />
+              <br />
+              Tu presencia hará que este día sea aún más especial, y nos
+              llenaría de felicidad que nos acompañes a celebrar el amor que
+              Dios ha escrito para nosotros.
+            </p>
+
+            <Flourish
+              className="mx-auto mt-8"
+              style={{ width: "min(60%, 220px)", height: "auto" }}
+            />
+
+            <p
+              className="font-[family-name:var(--font-parisienne)] mt-5"
+              style={{ color: GOLD, fontSize: "clamp(2.5rem, 7vw, 4.5rem)" }}
+            >
+              ¡Nos casamos!
+            </p>
+          </div>
+        </div>
       </div>
-    </div>
+    </section>
   );
 }

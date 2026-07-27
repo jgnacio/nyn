@@ -25,51 +25,85 @@
   --font-mono: var(--font-geist-mono);
 }
 
-/* SaveTheDate's canvas→HTML handoff background.
-   PORTRAIT (mobile): the SpiralGallery canvas hands off on Cloud Dancer
-   (--background), so this section receives it and eases down to Lino
-   (--background-alt) with a gradient — reads perfectly on tall viewports.
-   LANDSCAPE (desktop): the canvas plays that same Cloud-Dancer→Lino fade
-   INSIDE itself across the closing dwell (see the dwellState crossfade in
-   SpiralGallery.tsx), releasing already on Lino — so the HTML must START on
-   solid Lino to match, no gradient, or the join reads as a hard seam.
-   `orientation` mirrors the canvas's own `innerHeight > innerWidth` portrait test. */
-.save-the-date-bg {
-  background: linear-gradient(
-    to bottom,
-    var(--background) 0,
-    var(--background-alt) 420px
-  );
-}
-@media (orientation: landscape) {
-  .save-the-date-bg {
-    background: var(--background-alt);
-  }
-}
+/* --- Alternating section backgrounds -------------------------------------
+   The page alternates between the two whites of the palette — Lino envejecido
+   (--background-alt) and Cloud Dancer (--background) — so consecutive sections
+   read as distinct bands instead of one flat wall of cream.
 
-/* GallerySection sits on Lino (--background-alt) and UploadPhotos on Cloud
-   Dancer (--background), so butting them together drew a hard horizontal
-   line. UploadPhotos instead OPENS on Lino and eases into Cloud Dancer over
-   its top 220px, absorbing the join into the section itself — same trick as
-   .save-the-date-bg above, which softens the canvas→HTML handoff. Done in CSS
-   rather than inline because a gradient needs the two-stop form and the
-   section already carries a `style` prop for nothing else. */
-.upload-photos-bg {
+   Butting two different whites against each other draws a hard horizontal
+   line, so no section is a solid fill: each one OPENS on the color the
+   section above it ENDED on and eases into its own over its top
+   SECTION_FADE (220px), absorbing the join into itself. That means these two
+   classes must be applied in strict alternation down the page — each one
+   assumes the previous section left the opposite color behind. The current
+   chain (see page.tsx):
+
+     SpiralGallery canvas .... Lino (constant, set in JS)
+     ClosingInvitation ....... Lino  (continuous with the canvas, no fade —
+                                      its invitation card is the Cloud Dancer)
+     SaveTheDate ............. → Cloud Dancer
+     GallerySection .......... → Lino
+     UploadPhotos ............ → Cloud Dancer
+     GiftsSection ............ → Lino
+     RSVPSection ............. → Cloud Dancer
+     Countdown ............... → Lino
+     Footer .................. photo, with its own Lino→transparent overlay
+
+   Done in CSS rather than inline because a gradient needs the two-stop form.
+   Insert or reorder a section and you must re-check the alternation: two
+   `-to-lino` in a row is a no-op fade and a visible seam. */
+/* Both directions use the same long, eased ramp. A plain two-stop gradient
+   reads as a distinct band with a visible edge at each end, where the gradient
+   meets the flat color — the shorter it is, the more it looks like a shape
+   rather than a transition. Two things fix that: room (560px), and
+   intermediate stops that make the ramp ease in and out instead of running
+   linearly, so most of the color change happens in the middle and neither end
+   has a detectable start or finish. The stop percentages are mirrored between
+   the two classes so a section reads the same whichever way it is going. */
+.section-fade-to-cloud {
   background: linear-gradient(
     to bottom,
     var(--background-alt) 0,
-    var(--background) 220px
+    color-mix(in srgb, var(--background-alt) 78%, var(--background)) 150px,
+    color-mix(in srgb, var(--background-alt) 38%, var(--background)) 330px,
+    color-mix(in srgb, var(--background-alt) 12%, var(--background)) 450px,
+    var(--background) 560px
   );
 }
 
-/* Mirror of .upload-photos-bg, one step further down the page: UploadPhotos
-   ends on Cloud Dancer, so GiftsSection opens there and eases back to Lino. */
-.gifts-bg {
+.section-fade-to-lino {
   background: linear-gradient(
     to bottom,
     var(--background) 0,
-    var(--background-alt) 220px
+    color-mix(in srgb, var(--background) 78%, var(--background-alt)) 150px,
+    color-mix(in srgb, var(--background) 38%, var(--background-alt)) 330px,
+    color-mix(in srgb, var(--background) 12%, var(--background-alt)) 450px,
+    var(--background-alt) 560px
   );
+}
+
+/* Hero scroll affordance (SpiralGallery). A slow, small vertical drift — the
+   standard "there is more below" cue. Only the arrow group moves; its FADE is
+   driven per-frame from the scroll position in JS, so this animation must not
+   touch opacity or it would fight that. */
+@keyframes scroll-hint-drift {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(7px);
+  }
+}
+
+.scroll-hint {
+  animation: scroll-hint-drift 2.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scroll-hint {
+    animation: none;
+  }
 }
 
 /* Shared horizontal shell for every HTML section BELOW the 3D experience.

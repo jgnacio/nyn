@@ -59,16 +59,14 @@ function PinIcon() {
 export default function SaveTheDate() {
   return (
     <section
-      // Background lives in .save-the-date-bg (globals.css) because the
-      // canvas→HTML handoff color differs by ORIENTATION and inline styles
-      // can't hold a media query: portrait receives Cloud Dancer with a
-      // gradient down to Lino; landscape starts on solid Lino because the
-      // canvas itself already faded to Lino across the closing dwell. See the
-      // dwellState crossfade in SpiralGallery.tsx.
+      // Opens on the Lino that ClosingInvitation above ends on and eases into
+      // Cloud Dancer — first step of the alternating chain described in
+      // globals.css. Background lives there because a gradient needs the
+      // two-stop form.
       // No horizontal padding here: the background and the corner sprigs are
       // full-bleed, the CONTENT is boxed by .section-shell below (globals.css)
       // so every section under the 3D experience shares one desktop measure.
-      className="save-the-date-bg relative w-full py-20 sm:py-28 overflow-hidden"
+      className="section-fade-to-cloud relative w-full py-20 sm:py-28 overflow-hidden"
     >
       <CornerSprig className="pointer-events-none absolute top-0 left-0 w-[16%] max-w-[150px] h-auto -translate-x-1/4 -translate-y-1/4 opacity-60" />
       <CornerSprig className="pointer-events-none absolute bottom-0 right-0 w-[16%] max-w-[150px] h-auto translate-x-1/4 translate-y-1/4 -scale-x-100 -scale-y-100 opacity-60" />

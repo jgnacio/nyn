@@ -50,7 +50,7 @@ function HeartIcon() {
 // adjacent sections blend instead of meeting at a hard horizontal line.
 export default function UploadPhotos() {
   return (
-    <section className="upload-photos-bg relative w-full py-20 sm:py-28 overflow-hidden text-center">
+    <section className="section-fade-to-cloud relative w-full py-20 sm:py-28 overflow-hidden text-center">
       {/* .section-shell (globals.css) — shared desktop measure/gutter across
           every section below the 3D experience. */}
       <div className="section-shell">
