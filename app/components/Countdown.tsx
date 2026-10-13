@@ -9,10 +9,10 @@ import {
 } from "./ClosingInvitation";
 
 // Ceremony start, with the UTC-3 offset written out explicitly. A bare
-// "2026-10-24T18:30" would be parsed in the VISITOR's timezone, so a guest
+// "2026-10-24T18:00" would be parsed in the VISITOR's timezone, so a guest
 // abroad — or anyone whose phone clock is set to another zone — would see a
 // countdown that disagrees with the invitation by hours.
-const TARGET = new Date("2026-10-24T18:30:00-03:00").getTime();
+const TARGET = new Date("2026-10-24T18:00:00-03:00").getTime();
 
 type Remaining = { days: number; hours: number; minutes: number } | null;
 

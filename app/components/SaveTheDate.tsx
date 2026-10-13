@@ -22,13 +22,14 @@ const EVENTS: WeddingEvent[] = [
     month: "de Octubre",
     label: "Registro Civil",
     place: "Montevideo",
+    time: "10:30 h",
   },
   {
     day: "24",
     month: "de Octubre",
     label: "Ceremonia",
     place: "Portofino",
-    time: "18:30 h · llegada",
+    time: "18:00 h · llegada",
     mapUrl: "https://maps.app.goo.gl/jyxzUfVradng4tqu9",
   },
 ];
